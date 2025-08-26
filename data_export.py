@@ -2,14 +2,27 @@ from schemas import TABLE_SCHEMAS
 from bson import ObjectId
 import psycopg2
 from mongo_connection import get_mongo_collection
+from import_summary import ImportSummary
 
+# Global instance for backward compatibility
+import_summary = ImportSummary()
 
-def export_table_data(conn, table_name, collection, custom_filter=None):
+def print_import_summary(entities=None, summary_instance=None):
+    """Print a summary of import statistics by entity
+    
+    Args:
+        entities: String or list of entity names to show. If None, shows all.
+        summary_instance: ImportSummary instance to use. If None, uses global instance.
+    """
+    summary = summary_instance or import_summary
+    summary.print_summary(entities)
+
+def export_table_data(conn, table_name, collection, custom_filter=None, summary_instance=None):
     schema = TABLE_SCHEMAS[table_name]
     
     # Special handling for quizz_questions
     if table_name == 'quizz_questions':
-        export_quizz_questions(conn, collection)
+        export_quizz_questions(conn, collection, summary_instance)
         return
     
     documents = collection.find()
@@ -41,24 +54,27 @@ def export_table_data(conn, table_name, collection, custom_filter=None):
         sql = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({', '.join(placeholders)}) ON CONFLICT (id) DO NOTHING"
         try:
             cursor.execute(sql, values)
+            summary = summary_instance or import_summary
+            summary.record_success(table_name)
         except psycopg2.IntegrityError as e:
             error_message = str(e).lower()
             if "foreign key constraint" in error_message:
-                print(f"❌ Foreign key error for {table_name} record with id {doc.get('_id', 'unknown')}: {str(e)}")
+                summary = summary_instance or import_summary
+                summary.record_error(table_name, 'Foreign key constraint')
                 conn.rollback()
                 continue
             elif "null value" in error_message or "not-null constraint" in error_message:
-                print(f"❌ NULL constraint error for {table_name} record with id {doc.get('_id', 'unknown')}: {str(e)}")
+                summary = summary_instance or import_summary
+                summary.record_error(table_name, 'NULL constraint')
                 conn.rollback()
                 continue
             else:
                 raise e
     
     conn.commit()
-    print(f"✅ {table_name.title()} imported from MongoDB to PostgreSQL")
 
 
-def export_quizz_questions(conn, questions_collection):
+def export_quizz_questions(conn, questions_collection, summary_instance=None):
     """Special export for quizz_questions that handles the Questions array relationship"""
     cursor = conn.cursor()
     quizzs_collection = get_mongo_collection('quizzs')
@@ -88,14 +104,67 @@ def export_quizz_questions(conn, questions_collection):
                 
                 try:
                     cursor.execute(sql, values)
+                    summary = summary_instance or import_summary
+                    summary.record_success('quizz_questions')
                 except psycopg2.IntegrityError as e:
                     error_message = str(e).lower()
                     if "foreign key constraint" in error_message:
-                        print(f"❌ Foreign key error for quizz_questions record with id {question_doc['_id']}: {str(e)}")
+                        summary = summary_instance or import_summary
+                        summary.record_error('quizz_questions', 'Foreign key constraint')
                         conn.rollback()
                         continue
                     else:
                         raise e
+            else:
+                summary = summary_instance or import_summary
+                summary.record_error('quizz_questions', 'Question not found')
     
     conn.commit()
-    print("✅ Quizz_Questions imported from MongoDB to PostgreSQL")
+
+
+def export_user_quizz_questions(conn, questions_collection, summary_instance=None):
+    """Special export for quizz_questions that handles the Questions array relationship"""
+    cursor = conn.cursor()
+    quizzs_collection = get_mongo_collection('userquizzs')
+    
+    # Get all quizzs with their Questions arrays
+    quizzs = quizzs_collection.find({'questions': {'$exists': True, '$ne': []}})
+    
+    for quiz in quizzs:
+        quiz_id = str(quiz['_id'])
+        questions_ids = quiz.get('questions', [])
+        
+        for question_id in questions_ids:
+            # Find the corresponding question document
+            question_doc = questions_collection.find_one({'_id': ObjectId(question_id)})
+            
+            if question_doc:
+                # Prepare values for insertion
+                values = [
+                    str(question_doc['_id']),  # id
+                    quiz_id,  # quizz_id (foreign key)
+                    str(question_doc['quizz_question']),  # question text
+                    question_doc.get('creation_date', None)
+                ]
+                
+                sql = """INSERT INTO user_quizz_questions (id, user_quizz_id, quizz_question_id, created_at) 
+                         VALUES (%s, %s, %s, %s) ON CONFLICT (id) DO NOTHING"""
+                
+                try:
+                    cursor.execute(sql, values)
+                    summary = summary_instance or import_summary
+                    summary.record_success('user_quizz_questions')
+                except psycopg2.IntegrityError as e:
+                    error_message = str(e).lower()
+                    if "foreign key constraint" in error_message:
+                        summary = summary_instance or import_summary
+                        summary.record_error('user_quizz_questions', 'Foreign key constraint')
+                        conn.rollback()
+                        continue
+                    else:
+                        raise e
+            else:
+                summary = summary_instance or import_summary
+                summary.record_error('user_quizz_questions', 'Question not found')
+    
+    conn.commit()

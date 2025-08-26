@@ -1,7 +1,8 @@
 from mongo_connection import get_mongo_collection
 from postgres_connection import connect_postgres, setup_tables
 from schemas import TABLE_SCHEMAS
-from data_export import export_table_data
+from data_export import export_table_data, print_import_summary
+from import_summary import ImportSummary
 
 
 if __name__ == "__main__":
@@ -16,7 +17,10 @@ if __name__ == "__main__":
         
         custom_filter = None
         
-        export_table_data(conn, table_name, collection, custom_filter)
+        # Create a separate summary instance for each entity
+        entity_summary = ImportSummary()
+        export_table_data(conn, table_name, collection, custom_filter, entity_summary)
+        print_import_summary(table_name, entity_summary)
     
     conn.close()
     print("✅ All data migration completed successfully!")

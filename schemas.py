@@ -142,6 +142,17 @@ def create_schemas():
             export_order=3
         ),
         
+        'user_quizz_questions': TableSchema.create(
+            columns=[
+                ColumnDefinition('id', 'VARCHAR', primary_key=True),
+                ColumnDefinition('user_quizz_id', 'VARCHAR', foreign_key='user_quizzs(id)'),
+                ColumnDefinition('quizz_question_id', 'VARCHAR', foreign_key='quizz_questions(id)'),
+                ColumnDefinition('created_at', 'DATE', nullable=False)
+            ],
+            mongo_collection='userquizzquestions',
+            export_order=4
+        ),
+        
         'appointments': TableSchema.create(
             columns=[
                 ColumnDefinition('id', 'VARCHAR', primary_key=True),
@@ -170,13 +181,15 @@ def create_schemas():
                 ColumnDefinition('day', 'DATE', nullable=False),
                 ColumnDefinition('created_at', 'DATE', nullable=False),
                 ColumnDefinition('user_id', 'VARCHAR', foreign_key='users(id)'),
-                ColumnDefinition('coaching_id', 'VARCHAR', foreign_key='coachings(id)')
+                ColumnDefinition('coaching_id', 'VARCHAR', foreign_key='coachings(id)'),
+                ColumnDefinition('user_quizz_id', 'VARCHAR', foreign_key='user_quizzs(id)')
             ],
             explicit_mappings={
                 'creation_date': 'created_at',
                 'user': 'user_id',
-                'coaching': 'coaching_id'
+                'logbook': 'user_quizz_id'
             },
+            mongo_collection='coachinglogbooks',
             export_order=4
         )
     }

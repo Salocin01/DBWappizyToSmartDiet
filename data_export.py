@@ -64,11 +64,11 @@ def export_quizz_questions(conn, questions_collection):
     quizzs_collection = get_mongo_collection('quizzs')
     
     # Get all quizzs with their Questions arrays
-    quizzs = quizzs_collection.find({'Questions': {'$exists': True, '$ne': []}})
+    quizzs = quizzs_collection.find({'questions': {'$exists': True, '$ne': []}})
     
     for quiz in quizzs:
         quiz_id = str(quiz['_id'])
-        questions_ids = quiz.get('Questions', [])
+        questions_ids = quiz.get('questions', [])
         
         for question_id in questions_ids:
             # Find the corresponding question document
@@ -79,11 +79,11 @@ def export_quizz_questions(conn, questions_collection):
                 values = [
                     str(question_doc['_id']),  # id
                     quiz_id,  # quizz_id (foreign key)
-                    question_doc.get('question', ''),  # question text
+                    question_doc.get('title', ''),  # question text
                     question_doc.get('type', None)
                 ]
                 
-                sql = """INSERT INTO quizz_questions (id, quizz_id, question, type) 
+                sql = """INSERT INTO quizz_questions (id, quizz_id, title, type) 
                          VALUES (%s, %s, %s, %s) ON CONFLICT (id) DO NOTHING"""
                 
                 try:

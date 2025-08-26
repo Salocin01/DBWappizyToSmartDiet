@@ -85,9 +85,8 @@ def create_schemas():
             columns=[
                 ColumnDefinition('id', 'VARCHAR', primary_key=True),
                 ColumnDefinition('quizz_id', 'VARCHAR', foreign_key='quizzs(id)'),
-                ColumnDefinition('title', 'VARCHAR(255)', nullable=False),
-                ColumnDefinition('type', 'VARCHAR(100)'),
-                ColumnDefinition('order_nb', 'SMALLINT')
+                ColumnDefinition('title', 'VARCHAR', nullable=False),
+                ColumnDefinition('type', 'VARCHAR(100)')
             ],
             mongo_collection='quizzquestions',
             export_order=3

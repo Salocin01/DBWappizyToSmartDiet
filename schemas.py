@@ -92,6 +92,22 @@ def create_schemas():
             export_order=3
         ),
         
+        'user_quizzs': TableSchema.create(
+            columns=[
+                ColumnDefinition('id', 'VARCHAR', primary_key=True),
+                ColumnDefinition('quizz_id', 'VARCHAR', foreign_key='quizzs(id)'),
+                ColumnDefinition('name', 'VARCHAR', nullable=False),
+                ColumnDefinition('type', 'VARCHAR(100)'),
+                ColumnDefinition('created_at', 'DATE', nullable=False)
+            ],
+            explicit_mappings={
+                'creation_date': 'created_at',
+                'quizz': 'quizz_id'
+            },
+            mongo_collection='userquizzs',
+            export_order=3
+        ),
+        
         'messages': TableSchema.create(
             columns=[
                 ColumnDefinition('id', 'VARCHAR', primary_key=True),

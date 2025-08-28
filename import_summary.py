@@ -7,9 +7,9 @@ class ImportSummary:
     def __init__(self):
         self.stats = defaultdict(lambda: {'good': 0, 'bad': defaultdict(int)})
     
-    def record_success(self, entity):
-        """Record a successful import for an entity"""
-        self.stats[entity]['good'] += 1
+    def record_success(self, entity, count=1):
+        """Record successful import(s) for an entity"""
+        self.stats[entity]['good'] += count
     
     def record_error(self, entity, reason):
         """Record an error for an entity with a specific reason"""

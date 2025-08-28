@@ -5,25 +5,43 @@ def create_schemas():
         'ingredients': TableSchema.create(
             columns=[
                 ColumnDefinition('id', 'VARCHAR', primary_key=True),
-                ColumnDefinition('name', 'VARCHAR(255)', nullable=False)
+                ColumnDefinition('name', 'VARCHAR(255)', nullable=False),
+                ColumnDefinition('created_at', 'DATE', nullable=False),
+                ColumnDefinition('updated_at', 'DATE', nullable=False)
             ],
+            explicit_mappings={
+                'creation_date': 'created_at',
+                'update_date': 'updated_at'
+            },
             export_order=1
         ),
         
         'appointment_types': TableSchema.create(
             columns=[
                 ColumnDefinition('id', 'VARCHAR', primary_key=True),
-                ColumnDefinition('title', 'VARCHAR(255)', nullable=False)
+                ColumnDefinition('title', 'VARCHAR(255)', nullable=False),
+                ColumnDefinition('created_at', 'DATE', nullable=False),
+                ColumnDefinition('updated_at', 'DATE', nullable=False)
             ],
             mongo_collection='appointmenttypes',
+            explicit_mappings={
+                'creation_date': 'created_at',
+                'update_date': 'updated_at'
+            },
             export_order=1
         ),
         
         'companies': TableSchema.create(
             columns=[
                 ColumnDefinition('id', 'VARCHAR', primary_key=True),
-                ColumnDefinition('name', 'VARCHAR(255)', nullable=False)
+                ColumnDefinition('name', 'VARCHAR(255)', nullable=False),
+                ColumnDefinition('created_at', 'DATE', nullable=False),
+                ColumnDefinition('updated_at', 'DATE', nullable=False)
             ],
+            explicit_mappings={
+                'creation_date': 'created_at',
+                'update_date': 'updated_at'
+            },
             export_order=1
         ),
         
@@ -32,8 +50,14 @@ def create_schemas():
                 ColumnDefinition('id', 'VARCHAR', primary_key=True),
                 ColumnDefinition('name', 'VARCHAR(255)', nullable=False),
                 ColumnDefinition('duration', 'SMALLINT', nullable=False),
-                ColumnDefinition('coaching_credit', 'SMALLINT', nullable=False)
+                ColumnDefinition('coaching_credit', 'SMALLINT', nullable=False),
+                ColumnDefinition('created_at', 'DATE', nullable=False),
+                ColumnDefinition('updated_at', 'DATE', nullable=False)
             ],
+            explicit_mappings={
+                'creation_date': 'created_at',
+                'update_date': 'updated_at'
+            },
             export_order=1
         ),
         
@@ -41,16 +65,28 @@ def create_schemas():
             columns=[
                 ColumnDefinition('id', 'VARCHAR', primary_key=True),
                 ColumnDefinition('name', 'VARCHAR(255)', nullable=False),
-                ColumnDefinition('type', 'VARCHAR(255)', nullable=False)
+                ColumnDefinition('type', 'VARCHAR(255)', nullable=False),
+                ColumnDefinition('created_at', 'DATE', nullable=False),
+                ColumnDefinition('updated_at', 'DATE', nullable=False)
             ],
+            explicit_mappings={
+                'creation_date': 'created_at',
+                'update_date': 'updated_at'
+            },
             export_order=1
         ),
         
         'targets': TableSchema.create(
             columns=[
                 ColumnDefinition('id', 'VARCHAR', primary_key=True),
-                ColumnDefinition('name', 'VARCHAR(255)', nullable=False)
+                ColumnDefinition('name', 'VARCHAR(255)', nullable=False),
+                ColumnDefinition('created_at', 'DATE', nullable=False),
+                ColumnDefinition('updated_at', 'DATE', nullable=False)
             ],
+            explicit_mappings={
+                'creation_date': 'created_at',
+                'update_date': 'updated_at'
+            },
             export_order=1
         ),
         
@@ -61,12 +97,14 @@ def create_schemas():
                 ColumnDefinition('lastname', 'VARCHAR(255)', nullable=False),
                 ColumnDefinition('email', 'VARCHAR(255)', nullable=False),
                 ColumnDefinition('birthdate', 'DATE'),
-                ColumnDefinition('created_at', 'DATE', nullable=False),
                 ColumnDefinition('company_id', 'VARCHAR', foreign_key='companies(id)'),
-                ColumnDefinition('role', 'VARCHAR(100)', nullable=False)
+                ColumnDefinition('role', 'VARCHAR(100)', nullable=False),
+                ColumnDefinition('created_at', 'DATE', nullable=False),
+                ColumnDefinition('updated_at', 'DATE', nullable=False)
             ],
             explicit_mappings={
                 'creation_date': 'created_at',
+                'update_date': 'updated_at',
                 'company': 'company_id'
             },
             export_order=2
@@ -76,8 +114,14 @@ def create_schemas():
             columns=[
                 ColumnDefinition('id', 'VARCHAR', primary_key=True),
                 ColumnDefinition('name', 'VARCHAR(255)', nullable=False),
-                ColumnDefinition('type', 'VARCHAR(255)', nullable=False)
+                ColumnDefinition('type', 'VARCHAR(255)', nullable=False),
+                ColumnDefinition('created_at', 'DATE', nullable=False),
+                ColumnDefinition('updated_at', 'DATE', nullable=False)
             ],
+            explicit_mappings={
+                'creation_date': 'created_at',
+                'update_date': 'updated_at'
+            },
             export_order=2
         ),
         
@@ -86,9 +130,15 @@ def create_schemas():
                 ColumnDefinition('id', 'VARCHAR', primary_key=True),
                 ColumnDefinition('quizz_id', 'VARCHAR', foreign_key='quizzs(id)'),
                 ColumnDefinition('title', 'VARCHAR', nullable=False),
-                ColumnDefinition('type', 'VARCHAR(100)')
+                ColumnDefinition('type', 'VARCHAR(100)'),
+                ColumnDefinition('created_at', 'DATE', nullable=False),
+                ColumnDefinition('updated_at', 'DATE', nullable=False)
             ],
             mongo_collection='quizzquestions',
+            explicit_mappings={
+                'creation_date': 'created_at',
+                'update_date': 'updated_at'
+            },
             export_order=3
         ),
         
@@ -98,10 +148,12 @@ def create_schemas():
                 ColumnDefinition('quizz_id', 'VARCHAR', foreign_key='quizzs(id)'),
                 ColumnDefinition('name', 'VARCHAR', nullable=False),
                 ColumnDefinition('type', 'VARCHAR(100)'),
-                ColumnDefinition('created_at', 'DATE', nullable=False)
+                ColumnDefinition('created_at', 'DATE', nullable=False),
+                ColumnDefinition('updated_at', 'DATE', nullable=False)
             ],
             explicit_mappings={
                 'creation_date': 'created_at',
+                'update_date': 'updated_at',
                 'quizz': 'quizz_id'
             },
             mongo_collection='userquizzs',
@@ -114,10 +166,12 @@ def create_schemas():
                 ColumnDefinition('sender_id', 'VARCHAR', foreign_key='users(id)'),
                 ColumnDefinition('receiver_id', 'VARCHAR', foreign_key='users(id)'),
                 ColumnDefinition('content', 'TEXT', nullable=False),
-                ColumnDefinition('created_at', 'DATE', nullable=False)
+                ColumnDefinition('created_at', 'DATE', nullable=False),
+                ColumnDefinition('updated_at', 'DATE', nullable=False)
             ],
             explicit_mappings={
                 'creation_date': 'created_at',
+                'update_date': 'updated_at',
                 'sender': 'sender_id',
                 'receiver': 'receiver_id'
             },
@@ -131,10 +185,12 @@ def create_schemas():
                 ColumnDefinition('diet_id', 'VARCHAR', foreign_key='users(id)'),
                 ColumnDefinition('offer_id', 'VARCHAR', foreign_key='offers(id)'),
                 ColumnDefinition('status', 'VARCHAR(100)', nullable=False),
-                ColumnDefinition('created_at', 'DATE', nullable=False)
+                ColumnDefinition('created_at', 'DATE', nullable=False),
+                ColumnDefinition('updated_at', 'DATE', nullable=False)
             ],
             explicit_mappings={
                 'creation_date': 'created_at',
+                'update_date': 'updated_at',
                 'user': 'user_id',
                 'diet': 'diet_id',
                 'offer': 'offer_id'
@@ -147,9 +203,15 @@ def create_schemas():
                 ColumnDefinition('id', 'VARCHAR', primary_key=True),
                 ColumnDefinition('user_quizz_id', 'VARCHAR', foreign_key='user_quizzs(id)'),
                 ColumnDefinition('quizz_question_id', 'VARCHAR', foreign_key='quizz_questions(id)'),
-                ColumnDefinition('created_at', 'DATE', nullable=False)
+                ColumnDefinition('created_at', 'DATE', nullable=False),
+                ColumnDefinition('updated_at', 'DATE', nullable=False)
             ],
             mongo_collection='userquizzquestions',
+            explicit_mappings={
+                'creation_date': 'created_at',
+                'update_date': 'updated_at',
+                'quizz_question': 'quizz_question_id'
+            },
             export_order=4
         ),
         
@@ -161,12 +223,14 @@ def create_schemas():
                 ColumnDefinition('type_id', 'VARCHAR', foreign_key='appointment_types(id)'),
                 ColumnDefinition('start_date', 'DATE', nullable=False),
                 ColumnDefinition('end_date', 'DATE', nullable=False),
-                ColumnDefinition('created_at', 'DATE', nullable=False),
                 ColumnDefinition('validated', 'BOOLEAN'),
-                ColumnDefinition('order_nb', 'SMALLINT', nullable=False)
+                ColumnDefinition('order_nb', 'SMALLINT', nullable=False),
+                ColumnDefinition('created_at', 'DATE', nullable=False),
+                ColumnDefinition('updated_at', 'DATE', nullable=False)
             ],
             explicit_mappings={
                 'creation_date': 'created_at',
+                'update_date': 'updated_at',
                 'user': 'user_id',
                 'coaching': 'coaching_id',
                 'appointment_type': 'type_id',
@@ -179,13 +243,15 @@ def create_schemas():
             columns=[
                 ColumnDefinition('id', 'VARCHAR', primary_key=True),
                 ColumnDefinition('day', 'DATE', nullable=False),
-                ColumnDefinition('created_at', 'DATE', nullable=False),
                 ColumnDefinition('user_id', 'VARCHAR', foreign_key='users(id)'),
                 ColumnDefinition('coaching_id', 'VARCHAR', foreign_key='coachings(id)'),
-                ColumnDefinition('user_quizz_id', 'VARCHAR', foreign_key='user_quizzs(id)')
+                ColumnDefinition('user_quizz_id', 'VARCHAR', foreign_key='user_quizzs(id)'),
+                ColumnDefinition('created_at', 'DATE', nullable=False),
+                ColumnDefinition('updated_at', 'DATE', nullable=False)
             ],
             explicit_mappings={
                 'creation_date': 'created_at',
+                'update_date': 'updated_at',
                 'user': 'user_id',
                 'logbook': 'user_quizz_id'
             },

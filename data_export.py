@@ -24,6 +24,9 @@ def export_table_data(conn, table_name, collection, custom_filter=None, summary_
     if table_name == 'quizz_questions':
         export_quizz_questions(conn, collection, summary_instance)
         return
+    elif table_name == 'user_quizz_questions':
+        export_user_quizz_questions(conn, collection, summary_instance)
+        return
     
     documents = collection.find()
     cursor = conn.cursor()
@@ -74,7 +77,7 @@ def export_table_data(conn, table_name, collection, custom_filter=None, summary_
     conn.commit()
 
 
-def export_quizz_questions(conn, questions_collection, summary_instance=None):
+def export_quizz_questions(conn, questions_collection, summary_instance=None, total=None, limit=20000, offset=0):
     """Special export for quizz_questions that handles the Questions array relationship"""
     cursor = conn.cursor()
     quizzs_collection = get_mongo_collection('quizzs')
@@ -122,49 +125,93 @@ def export_quizz_questions(conn, questions_collection, summary_instance=None):
     conn.commit()
 
 
-def export_user_quizz_questions(conn, questions_collection, summary_instance=None):
+def export_user_quizz_questions(conn, questions_collection, summary_instance=None, total=None, limit=2000, offset=0):
     """Special export for quizz_questions that handles the Questions array relationship"""
     cursor = conn.cursor()
-    quizzs_collection = get_mongo_collection('userquizzs')
+    user_quizzs_collection = get_mongo_collection('userquizzs')
+
+    if total is None:
+        '''
+        pipeline_count = [
+            {
+                "$group": {
+                "_id": None,
+                "count": {
+                    "$sum": 1
+                }
+                }
+            },
+            {
+                "$sort": {
+                "_id": 1
+                }
+            },
+            {
+                "$project": {
+                "_id": False,
+                "count": True
+                }
+            }
+        ]
+        total = list(questions_collection.aggregate(pipeline_count))
+        '''
+        total = 50000
+        
+    pipeline = [
+        {
+            "$lookup": {
+                "from": "userquizzquestions",
+                "localField": "questions",
+                "foreignField": "_id",
+                "as": "questions_answers"
+            }
+        },
+        { "$unwind": "$questions_answers" },
+        {
+            "$project": {
+                "_id": "$questions_answers._id",
+                "user_quizz_id": "$_id",
+                "creation_date": "$questions_answers.creation_date"
+            }
+        },
+        { "$skip": offset },   # offset (exemple)
+        { "$limit": limit }
+    ]
     
     # Get all quizzs with their Questions arrays
-    quizzs = quizzs_collection.find({'questions': {'$exists': True, '$ne': []}})
+    quizzs = user_quizzs_collection.aggregate(pipeline)
     
-    for quiz in quizzs:
-        quiz_id = str(quiz['_id'])
-        questions_ids = quiz.get('questions', [])
+    for quizz in quizzs:
+        quiz_id = str(quizz['_id'])
+        user_quizz_id = str(quizz['user_quizz_id'])
         
-        for question_id in questions_ids:
-            # Find the corresponding question document
-            question_doc = questions_collection.find_one({'_id': ObjectId(question_id)})
-            
-            if question_doc:
-                # Prepare values for insertion
-                values = [
-                    str(question_doc['_id']),  # id
-                    quiz_id,  # quizz_id (foreign key)
-                    str(question_doc['quizz_question']),  # question text
-                    question_doc.get('creation_date', None)
-                ]
-                
-                sql = """INSERT INTO user_quizz_questions (id, user_quizz_id, quizz_question_id, created_at) 
-                         VALUES (%s, %s, %s, %s) ON CONFLICT (id) DO NOTHING"""
-                
-                try:
-                    cursor.execute(sql, values)
-                    summary = summary_instance or import_summary
-                    summary.record_success('user_quizz_questions')
-                except psycopg2.IntegrityError as e:
-                    error_message = str(e).lower()
-                    if "foreign key constraint" in error_message:
-                        summary = summary_instance or import_summary
-                        summary.record_error('user_quizz_questions', 'Foreign key constraint')
-                        conn.rollback()
-                        continue
-                    else:
-                        raise e
-            else:
+        # Prepare values for insertion
+        values = [
+            quiz_id,  # id
+            user_quizz_id,  # quizz_id (foreign key)
+            quizz.get('creation_date', None)
+        ]
+        
+        sql = """INSERT INTO user_quizz_questions (id, user_quizz_id, created_at) 
+                    VALUES (%s, %s, %s) ON CONFLICT (id) DO NOTHING"""
+        
+        try:
+            cursor.execute(sql, values)
+            summary = summary_instance or import_summary
+            summary.record_success('user_quizz_questions')
+        except psycopg2.IntegrityError as e:
+            error_message = str(e).lower()
+            if "foreign key constraint" in error_message:
                 summary = summary_instance or import_summary
-                summary.record_error('user_quizz_questions', 'Question not found')
+                summary.record_error('user_quizz_questions', 'Foreign key constraint')
+                conn.rollback()
+                continue
+            else:
+                raise e
     
     conn.commit()
+
+    print_import_summary('user_quizz_questions', summary_instance)
+
+    if offset + limit < total:
+        export_user_quizz_questions(conn, questions_collection, summary_instance, total, limit, limit + offset)

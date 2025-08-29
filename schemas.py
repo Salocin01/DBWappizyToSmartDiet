@@ -192,7 +192,7 @@ def create_schemas():
                 'creation_date': 'created_at',
                 'update_date': 'updated_at',
                 'user': 'user_id',
-                'diet': 'diet_id',
+                #'diet': 'diet_id',
                 'offer': 'offer_id'
             },
             export_order=3
@@ -253,6 +253,7 @@ def create_schemas():
                 'creation_date': 'created_at',
                 'update_date': 'updated_at',
                 'user': 'user_id',
+                'coaching': 'coaching_id',
                 'logbook': 'user_quizz_id'
             },
             mongo_collection='coachinglogbooks',

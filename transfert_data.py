@@ -1,8 +1,8 @@
-from mongo_connection import get_mongo_collection
-from postgres_connection import connect_postgres, setup_tables
-from schemas import TABLE_SCHEMAS
-from data_export import export_table_data, print_import_summary, get_last_insert_date
-from import_summary import ImportSummary
+from src.connections.mongo_connection import get_mongo_collection
+from src.connections.postgres_connection import connect_postgres, setup_tables
+from src.schemas.schemas import TABLE_SCHEMAS
+from src.migration.data_export import export_table_data, print_import_summary, get_last_insert_date
+from src.migration.import_summary import ImportSummary
 
 
 if __name__ == "__main__":

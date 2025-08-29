@@ -1,8 +1,8 @@
-from schemas import TABLE_SCHEMAS
+from src.schemas.schemas import TABLE_SCHEMAS
 from bson import ObjectId
 import psycopg2
-from mongo_connection import get_mongo_collection
-from import_summary import ImportSummary
+from src.connections.mongo_connection import get_mongo_collection
+from .import_summary import ImportSummary
 
 # Global instance for backward compatibility
 import_summary = ImportSummary()

@@ -13,7 +13,7 @@ class MongoConnection:
         mongodb_url = os.getenv('MONGODB_URL', 'mongodb://localhost:27017')
         database_name = os.getenv('MONGODB_DATABASE', 'default')
         
-        self.client = MongoClient(mongodb_url)
+        self.client = MongoClient(mongodb_url, datetime_conversion='DATETIME_AUTO')
         self.db = self.client[database_name]
         return self.db
     

@@ -50,7 +50,7 @@ def connect_postgres():
 
 def setup_tables(conn):
     try:
-        from schemas import TABLE_SCHEMAS
+        from src.schemas.schemas import TABLE_SCHEMAS
         
         cursor = conn.cursor()
         print("PostgreSQL connected")

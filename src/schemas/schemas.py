@@ -1,4 +1,4 @@
-from table_schemas import TableSchema, ColumnDefinition
+from .table_schemas import TableSchema, ColumnDefinition
 
 def create_schemas():
     schemas = {

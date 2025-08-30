@@ -16,7 +16,7 @@ class MongoRefreshManager:
         self.remote_url = os.getenv('REMOTE_SERVER_URL')
         self.remote_user = os.getenv('REMOTE_SERVER_USER')
         self.remote_password = os.getenv('REMOTE_SERVER_PASSWORD')
-        self.remote_path = os.getenv('REMOTE_BACKUP_PATH')
+        self.remote_path = os.getenv('REMOTE_MONGODB_PATH')
         self.mongo_url = os.getenv('MONGODB_URL')
         self.mongo_db = os.getenv('MONGODB_DATABASE')
         self.tmp_dir = Path('./tmp')

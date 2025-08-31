@@ -1,5 +1,59 @@
 from .table_schemas import TableSchema, ColumnDefinition
 
+
+def _create_quizz_questions_strategy():
+    """Create strategy for quizz_questions array extraction"""
+    from ..migration.import_strategies import ArrayExtractionStrategy, ArrayExtractionConfig
+    
+    def quizz_questions_transformer(parent_id, child_doc):
+        return [
+            str(child_doc['_id']),
+            parent_id,
+            child_doc.get('title', ''),
+            child_doc.get('type', None),
+            child_doc.get('creation_date', None),
+            child_doc.get('update_date', None)
+        ]
+    
+    config = ArrayExtractionConfig(
+        parent_collection='quizzs',
+        array_field='questions',
+        child_collection='quizzquestions',
+        parent_filter_fields={'_id': 1, 'questions': 1},
+        child_projection_fields={'_id': 1, 'title': 1, 'type': 1, 'creation_date': 1, 'update_date': 1},
+        sql_columns=['id', 'quizz_id', 'title', 'type', 'created_at', 'updated_at'],
+        value_transformer=quizz_questions_transformer
+    )
+    
+    return ArrayExtractionStrategy(config)
+
+
+def _create_user_quizz_questions_strategy():
+    """Create strategy for user_quizz_questions array extraction"""
+    from ..migration.import_strategies import ArrayExtractionStrategy, ArrayExtractionConfig
+    
+    def user_quizz_questions_transformer(parent_id, child_doc):
+        return [
+            str(child_doc['_id']),
+            parent_id,
+            str(child_doc['quizz_question']) if child_doc.get('quizz_question') else None,
+            child_doc.get('creation_date', None),
+            child_doc.get('update_date', None)
+        ]
+    
+    config = ArrayExtractionConfig(
+        parent_collection='userquizzs',
+        array_field='questions',
+        child_collection='userquizzquestions',
+        parent_filter_fields={'_id': 1, 'questions': 1},
+        child_projection_fields={'_id': 1, 'quizz_question': 1, 'creation_date': 1, 'update_date': 1},
+        sql_columns=['id', 'user_quizz_id', 'quizz_question_id', 'created_at', 'updated_at'],
+        value_transformer=user_quizz_questions_transformer
+    )
+    
+    return ArrayExtractionStrategy(config)
+
+
 def create_schemas():
     schemas = {
         'ingredients': TableSchema.create(
@@ -139,7 +193,8 @@ def create_schemas():
                 'creation_date': 'created_at',
                 'update_date': 'updated_at'
             },
-            export_order=3
+            export_order=3,
+            import_strategy=_create_quizz_questions_strategy()
         ),
         
         'user_quizzs': TableSchema.create(
@@ -212,7 +267,8 @@ def create_schemas():
                 'update_date': 'updated_at',
                 'quizz_question': 'quizz_question_id'
             },
-            export_order=4
+            export_order=4,
+            import_strategy=_create_user_quizz_questions_strategy()
         ),
         
         'appointments': TableSchema.create(

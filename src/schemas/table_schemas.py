@@ -16,11 +16,12 @@ class TableSchema:
     columns: List[ColumnDefinition]
     field_mappings: Dict[str, str]
     export_order: int = 0
+    import_strategy: Optional[Any] = None
     
     @classmethod
     def create(cls, columns: List[ColumnDefinition], name: Optional[str] = None,
                mongo_collection: Optional[str] = None, explicit_mappings: Optional[Dict[str, str]] = None, 
-               export_order: int = 0) -> 'TableSchema':
+               export_order: int = 0, import_strategy: Optional[Any] = None) -> 'TableSchema':
         """Create a TableSchema with auto-generated field mappings.
         
         Args:
@@ -49,7 +50,7 @@ class TableSchema:
         if explicit_mappings:
             field_mappings.update(explicit_mappings)
             
-        return cls(name, mongo_collection, columns, field_mappings, export_order)
+        return cls(name, mongo_collection, columns, field_mappings, export_order, import_strategy)
     
     def get_create_sql(self) -> str:
         column_defs = []

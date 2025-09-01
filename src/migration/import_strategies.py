@@ -24,9 +24,9 @@ class ImportUtils:
             return {}
         
         if hasattr(after_date, 'date'):  # It's already a datetime
-            return {'creation_date': {'$gt': after_date}}
+            return {'creation_date': {'$gte': after_date}}
         else:  # It's a date, convert to datetime
-            return {'creation_date': {'$gt': datetime.combine(after_date, time.min)}}
+            return {'creation_date': {'$gte': datetime.combine(after_date, time.min)}}
     
     @staticmethod
     def handle_batch_errors(conn, cursor, sql, batch_values, table_name, summary_instance):
@@ -57,6 +57,38 @@ class ImportUtils:
         
         conn.commit()
         return successful_count
+    
+    @staticmethod
+    def execute_batch(conn, batch_values, columns, table_name, summary_instance, use_on_conflict=False):
+        """Execute a batch insert with error handling and progress tracking"""
+        from .import_summary import ImportSummary
+        
+        if not batch_values or not columns:
+            return 0
+            
+        summary = summary_instance or ImportSummary()
+        cursor = conn.cursor()
+        
+        placeholders = ', '.join(['%s'] * len(columns))
+        on_conflict_clause = " ON CONFLICT (id) DO NOTHING" if use_on_conflict else ""
+        sql = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders}){on_conflict_clause}"
+        
+        try:
+            cursor.executemany(sql, batch_values)
+            actual_insertions = cursor.rowcount
+            skipped_count = len(batch_values) - actual_insertions
+            
+            summary.record_success(table_name, actual_insertions)
+            if skipped_count > 0:
+                summary.record_skipped(table_name, skipped_count)
+            
+            conn.commit()
+            return actual_insertions
+            
+        except psycopg2.IntegrityError:
+            return ImportUtils.handle_batch_errors(
+                conn, cursor, sql, batch_values, table_name, summary_instance
+            )
 
 
 class ImportStrategy(ABC):
@@ -153,27 +185,12 @@ class DirectTranslationStrategy(ImportStrategy):
                     batch_values.append(values)
             
             if batch_values:
-                placeholders = ', '.join(['%s'] * len(columns))
-                sql = f"INSERT INTO {config.table_name} ({', '.join(columns)}) VALUES ({placeholders}) ON CONFLICT (id) DO NOTHING"
-                
-                try:
-                    cursor.executemany(sql, batch_values)
-                    actual_insertions = cursor.rowcount
-                    skipped_count = len(batch_values) - actual_insertions
-                    
-                    summary.record_success(config.table_name, actual_insertions)
-                    if skipped_count > 0:
-                        summary.record_skipped(config.table_name, skipped_count)
-                    
-                    processed_docs += actual_insertions
-                    conn.commit()
-                    print(f"Processed {processed_docs}/{total_docs} documents for {config.table_name} (tried {len(batch_values)}, inserted {actual_insertions}, skipped {skipped_count})")
-                    
-                except psycopg2.IntegrityError:
-                    successful_count = ImportUtils.handle_batch_errors(
-                        conn, cursor, sql, batch_values, config.table_name, config.summary_instance
-                    )
-                    processed_docs += successful_count
+                actual_insertions = ImportUtils.execute_batch(
+                    conn, batch_values, columns, config.table_name, config.summary_instance
+                )
+                processed_docs += actual_insertions
+                skipped_count = len(batch_values) - actual_insertions
+                print(f"Processed {processed_docs}/{total_docs} documents for {config.table_name} (tried {len(batch_values)}, inserted {actual_insertions}, skipped {skipped_count})")
             
             offset += config.batch_size
             
@@ -266,10 +283,8 @@ class ArrayExtractionStrategy(ImportStrategy):
     
     def export_data(self, conn, collection, config: ImportConfig):
         from src.connections.mongo_connection import get_mongo_collection
-        from .import_summary import ImportSummary
         
         cursor = conn.cursor()
-        summary = config.summary_instance or ImportSummary()
         
         child_collection = get_mongo_collection(self.config.child_collection) if self.config.child_collection else collection
         
@@ -295,27 +310,10 @@ class ArrayExtractionStrategy(ImportStrategy):
                     batch_values.extend(parent_batch_values)
             
             if batch_values:
-                placeholders = ', '.join(['%s'] * len(columns))
-                sql = f"""INSERT INTO {config.table_name} ({', '.join(columns)}) 
-                         VALUES ({placeholders}) ON CONFLICT (id) DO NOTHING"""
-                
-                try:
-                    cursor.executemany(sql, batch_values)
-                    actual_insertions = cursor.rowcount
-                    skipped_count = len(batch_values) - actual_insertions
-                    
-                    summary.record_success(config.table_name, actual_insertions)
-                    if skipped_count > 0:
-                        summary.record_skipped(config.table_name, skipped_count)
-                    
-                    total_children += actual_insertions
-                    conn.commit()
-                    
-                except psycopg2.IntegrityError:
-                    successful_count = ImportUtils.handle_batch_errors(
-                        conn, cursor, sql, batch_values, config.table_name, config.summary_instance
-                    )
-                    total_children += successful_count
+                actual_insertions = ImportUtils.execute_batch(
+                    conn, batch_values, columns, config.table_name, config.summary_instance, use_on_conflict=True
+                )
+                total_children += actual_insertions
             
             processed_parents += len(parents)
             print(f"Processed {processed_parents}/{total_parents} {self.config.parent_collection}, {total_children} {config.table_name}")

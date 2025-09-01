@@ -155,7 +155,7 @@ class DatabaseComparator:
         """Close database connections"""
         if self.postgres_conn:
             self.postgres_conn.close()
-        if self.mongo_db and hasattr(self.mongo_db.client, 'close'):
+        if self.mongo_db is not None and hasattr(self.mongo_db.client, 'close'):
             self.mongo_db.client.close()
 
 

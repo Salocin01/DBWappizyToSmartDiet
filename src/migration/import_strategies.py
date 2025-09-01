@@ -44,12 +44,14 @@ class ImportUtils:
                 successful_count += 1
             except psycopg2.IntegrityError as individual_e:
                 error_message = str(individual_e).lower()
+                failed_record = {'id': values[0] if values else 'unknown', 'values': values}
+                
                 if "foreign key constraint" in error_message:
-                    summary.record_error(table_name, 'Foreign key constraint')
+                    summary.record_error(table_name, 'Foreign key constraint', failed_record)
                 elif "null value" in error_message or "not-null constraint" in error_message:
-                    summary.record_error(table_name, 'NULL constraint')
+                    summary.record_error(table_name, 'NULL constraint', failed_record)
                 else:
-                    raise individual_e
+                    summary.record_error(table_name, f'Other integrity error: {str(individual_e)[:100]}', failed_record)
                 conn.rollback()
                 continue
         
@@ -113,6 +115,7 @@ class DirectTranslationStrategy(ImportStrategy):
                 if isinstance(value, ObjectId):
                     value = str(value)
             else:
+                # Handle missing fields by setting to None (NULL in PostgreSQL)
                 value = None
                 
             values.append(value)
@@ -156,10 +159,15 @@ class DirectTranslationStrategy(ImportStrategy):
                 try:
                     cursor.executemany(sql, batch_values)
                     actual_insertions = cursor.rowcount
+                    skipped_count = len(batch_values) - actual_insertions
+                    
                     summary.record_success(config.table_name, actual_insertions)
+                    if skipped_count > 0:
+                        summary.record_skipped(config.table_name, skipped_count)
+                    
                     processed_docs += actual_insertions
                     conn.commit()
-                    print(f"Processed {processed_docs}/{total_docs} documents for {config.table_name} (tried {len(batch_values)}, inserted {actual_insertions})")
+                    print(f"Processed {processed_docs}/{total_docs} documents for {config.table_name} (tried {len(batch_values)}, inserted {actual_insertions}, skipped {skipped_count})")
                     
                 except psycopg2.IntegrityError:
                     successful_count = ImportUtils.handle_batch_errors(
@@ -251,7 +259,8 @@ class ArrayExtractionStrategy(ImportStrategy):
                     values = self._default_transform(parent_id, child_doc)
                 batch_values.append(values)
             else:
-                summary.record_error(config.table_name, 'Child document not found')
+                failed_record = {'id': str(child_id), 'parent_id': parent_id}
+                summary.record_error(config.table_name, 'Child document not found', failed_record)
         
         return batch_values, self.config.sql_columns
     
@@ -293,7 +302,12 @@ class ArrayExtractionStrategy(ImportStrategy):
                 try:
                     cursor.executemany(sql, batch_values)
                     actual_insertions = cursor.rowcount
+                    skipped_count = len(batch_values) - actual_insertions
+                    
                     summary.record_success(config.table_name, actual_insertions)
+                    if skipped_count > 0:
+                        summary.record_skipped(config.table_name, skipped_count)
+                    
                     total_children += actual_insertions
                     conn.commit()
                     

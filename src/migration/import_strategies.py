@@ -5,6 +5,12 @@ from bson import ObjectId
 import psycopg2
 from datetime import datetime, time
 
+# Control whether to use batch processing (True) or single-line SQL statements (False)
+IMPORT_BY_BATCH = True
+
+# Control whether to execute SQL directly (True) or generate SQL files (False)
+DIRECT_IMPORT = True
+
 
 @dataclass
 class ImportConfig:
@@ -60,34 +66,92 @@ class ImportUtils:
     
     @staticmethod
     def execute_batch(conn, batch_values, columns, table_name, summary_instance, use_on_conflict=False):
-        """Execute a batch insert with error handling and progress tracking"""
+        """Execute insert with error handling and progress tracking or generate SQL files"""
         from .import_summary import ImportSummary
+        import os
         
         if not batch_values or not columns:
             return 0
             
         summary = summary_instance or ImportSummary()
-        cursor = conn.cursor()
         
         placeholders = ', '.join(['%s'] * len(columns))
         on_conflict_clause = " ON CONFLICT (id) DO NOTHING" if use_on_conflict else ""
-        sql = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders}){on_conflict_clause}"
+        sql_template = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders}){on_conflict_clause}"
+        
+        if not DIRECT_IMPORT:
+            # Generate SQL file instead of executing
+            os.makedirs("sql_exports", exist_ok=True)
+            sql_file_path = f"sql_exports/{table_name}_import.sql"
+            
+            with open(sql_file_path, 'a', encoding='utf-8') as f:
+                for values in batch_values:
+                    # Format values for SQL file
+                    formatted_values = []
+                    for value in values:
+                        if value is None:
+                            formatted_values.append('NULL')
+                        elif isinstance(value, str):
+                            # Escape single quotes in strings
+                            escaped_value = value.replace("'", "''")
+                            formatted_values.append(f"'{escaped_value}'")
+                        elif isinstance(value, datetime):
+                            formatted_values.append(f"'{value.isoformat()}'")
+                        else:
+                            formatted_values.append(str(value))
+                    
+                    sql_statement = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({', '.join(formatted_values)}){on_conflict_clause};\n"
+                    f.write(sql_statement)
+            
+            # Record as successful for tracking purposes
+            summary.record_success(table_name, len(batch_values))
+            print(f"Generated SQL for {len(batch_values)} records in {sql_file_path}")
+            return len(batch_values)
+        
+        # Direct execution (original behavior)
+        cursor = conn.cursor()
         
         try:
-            cursor.executemany(sql, batch_values)
-            actual_insertions = cursor.rowcount
-            skipped_count = len(batch_values) - actual_insertions
-            
-            summary.record_success(table_name, actual_insertions)
-            if skipped_count > 0:
-                summary.record_skipped(table_name, skipped_count)
-            
-            conn.commit()
-            return actual_insertions
+            if IMPORT_BY_BATCH:
+                # Use batch processing (executemany)
+                cursor.executemany(sql_template, batch_values)
+                actual_insertions = cursor.rowcount
+                skipped_count = len(batch_values) - actual_insertions
+                
+                summary.record_success(table_name, actual_insertions)
+                if skipped_count > 0:
+                    summary.record_skipped(table_name, skipped_count)
+                
+                conn.commit()
+                return actual_insertions
+            else:
+                # Use single-line SQL statements
+                successful_count = 0
+                for values in batch_values:
+                    
+                    try:
+                        cursor.execute(sql_template, values)
+                        summary.record_success(table_name)
+                        successful_count += 1
+                    except psycopg2.IntegrityError as e:
+                        error_message = str(e).lower()
+                        failed_record = {'id': values[0] if values else 'unknown', 'values': values}
+                        
+                        if "foreign key constraint" in error_message:
+                            summary.record_error(table_name, 'Foreign key constraint', failed_record)
+                        elif "null value" in error_message or "not-null constraint" in error_message:
+                            summary.record_error(table_name, 'NULL constraint', failed_record)
+                        else:
+                            summary.record_error(table_name, f'Other integrity error: {str(e)[:100]}', failed_record)
+                        conn.rollback()
+                        continue
+                
+                conn.commit()
+                return successful_count
             
         except psycopg2.IntegrityError:
             return ImportUtils.handle_batch_errors(
-                conn, cursor, sql, batch_values, table_name, summary_instance
+                conn, cursor, sql_template, batch_values, table_name, summary_instance
             )
 
 
@@ -157,10 +221,18 @@ class DirectTranslationStrategy(ImportStrategy):
     def export_data(self, conn, collection, config: ImportConfig):
         from src.schemas.schemas import TABLE_SCHEMAS
         from .import_summary import ImportSummary
+        import os
         
-        schema = TABLE_SCHEMAS[config.table_name]
         summary = config.summary_instance or ImportSummary()
-        cursor = conn.cursor()
+        
+        # Clear SQL file if we're generating SQL instead of executing
+        if not DIRECT_IMPORT:
+            sql_file_path = f"sql_exports/{config.table_name}_import.sql"
+            if os.path.exists(sql_file_path):
+                os.remove(sql_file_path)
+        
+        if DIRECT_IMPORT:
+            cursor = conn.cursor()
         
         # Get total count for progress tracking
         total_docs = self.count_total_documents(collection, config)
@@ -189,16 +261,22 @@ class DirectTranslationStrategy(ImportStrategy):
                     conn, batch_values, columns, config.table_name, config.summary_instance
                 )
                 processed_docs += actual_insertions
-                skipped_count = len(batch_values) - actual_insertions
-                print(f"Processed {processed_docs}/{total_docs} documents for {config.table_name} (tried {len(batch_values)}, inserted {actual_insertions}, skipped {skipped_count})")
+                if DIRECT_IMPORT:
+                    skipped_count = len(batch_values) - actual_insertions
+                    print(f"Processed {processed_docs}/{total_docs} documents for {config.table_name} (tried {len(batch_values)}, inserted {actual_insertions}, skipped {skipped_count})")
+                else:
+                    print(f"Generated SQL for {processed_docs}/{total_docs} documents for {config.table_name}")
             
             offset += config.batch_size
             
             if len(documents) < config.batch_size:
                 break
         
-        print(f"Completed processing {processed_docs} documents for {config.table_name}")
-        cursor.close()
+        action = "processing" if DIRECT_IMPORT else "SQL generation for"
+        print(f"Completed {action} {processed_docs} documents for {config.table_name}")
+        
+        if DIRECT_IMPORT:
+            cursor.close()
 
 
 @dataclass
@@ -283,10 +361,16 @@ class ArrayExtractionStrategy(ImportStrategy):
     
     def export_data(self, conn, collection, config: ImportConfig):
         from src.connections.mongo_connection import get_mongo_collection
+        import os
         
-        cursor = conn.cursor()
+        # Clear SQL file if we're generating SQL instead of executing
+        if not DIRECT_IMPORT:
+            sql_file_path = f"sql_exports/{config.table_name}_import.sql"
+            if os.path.exists(sql_file_path):
+                os.remove(sql_file_path)
         
-        child_collection = get_mongo_collection(self.config.child_collection) if self.config.child_collection else collection
+        if DIRECT_IMPORT:
+            cursor = conn.cursor()
         
         total_parents = self.count_total_documents(collection, config)
         processed_parents = 0
@@ -316,15 +400,19 @@ class ArrayExtractionStrategy(ImportStrategy):
                 total_children += actual_insertions
             
             processed_parents += len(parents)
-            print(f"Processed {processed_parents}/{total_parents} {self.config.parent_collection}, {total_children} {config.table_name}")
+            action = "Processed" if DIRECT_IMPORT else "Generated SQL for"
+            print(f"{action} {processed_parents}/{total_parents} {self.config.parent_collection}, {total_children} {config.table_name}")
             
             offset += config.batch_size
             
             if len(parents) < config.batch_size:
                 break
         
-        print(f"Completed processing {total_children} records from {processed_parents} {self.config.parent_collection}")
-        cursor.close()
+        action = "processing" if DIRECT_IMPORT else "SQL generation for"
+        print(f"Completed {action} {total_children} records from {processed_parents} {self.config.parent_collection}")
+        
+        if DIRECT_IMPORT:
+            cursor.close()
     
     def _default_transform(self, parent_id, child_doc):
         """Default transformation - override with custom transformer if needed"""

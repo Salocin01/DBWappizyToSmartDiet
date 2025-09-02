@@ -1,4 +1,4 @@
-from .table_schemas import TableSchema, ColumnDefinition
+from .table_schemas import ColumnDefinition, BaseEntitySchema
 
 
 def _create_quizz_questions_strategy():
@@ -56,196 +56,120 @@ def _create_user_quizz_questions_strategy():
 
 def create_schemas():
     schemas = {
-        'ingredients': TableSchema.create(
-            columns=[
-                ColumnDefinition('id', 'VARCHAR', primary_key=True),
+        'ingredients': BaseEntitySchema.create_with_base(
+            additional_columns=[
                 ColumnDefinition('name', 'VARCHAR(255)', nullable=False),
-                ColumnDefinition('created_at', 'TIMESTAMP', nullable=False),
-                ColumnDefinition('updated_at', 'TIMESTAMP', nullable=False)
             ],
-            explicit_mappings={
-                'creation_date': 'created_at',
-                'update_date': 'updated_at'
-            },
             export_order=1
         ),
         
-        'appointment_types': TableSchema.create(
-            columns=[
-                ColumnDefinition('id', 'VARCHAR', primary_key=True),
+        'appointment_types': BaseEntitySchema.create_with_base(
+            additional_columns=[
                 ColumnDefinition('title', 'VARCHAR(255)', nullable=False),
-                ColumnDefinition('created_at', 'TIMESTAMP', nullable=False),
-                ColumnDefinition('updated_at', 'TIMESTAMP', nullable=False)
             ],
             mongo_collection='appointmenttypes',
-            explicit_mappings={
-                'creation_date': 'created_at',
-                'update_date': 'updated_at'
-            },
             export_order=1
         ),
         
-        'companies': TableSchema.create(
-            columns=[
-                ColumnDefinition('id', 'VARCHAR', primary_key=True),
+        'companies': BaseEntitySchema.create_with_base(
+            additional_columns=[
                 ColumnDefinition('name', 'VARCHAR(255)', nullable=False),
-                ColumnDefinition('created_at', 'TIMESTAMP', nullable=False),
-                ColumnDefinition('updated_at', 'TIMESTAMP', nullable=False)
             ],
-            explicit_mappings={
-                'creation_date': 'created_at',
-                'update_date': 'updated_at'
-            },
             export_order=1
         ),
         
-        'offers': TableSchema.create(
-            columns=[
-                ColumnDefinition('id', 'VARCHAR', primary_key=True),
+        'offers': BaseEntitySchema.create_with_base(
+            additional_columns=[
                 ColumnDefinition('name', 'VARCHAR(255)', nullable=False),
                 ColumnDefinition('duration', 'SMALLINT', nullable=False),
                 ColumnDefinition('coaching_credit', 'SMALLINT', nullable=False),
-                ColumnDefinition('created_at', 'TIMESTAMP', nullable=False),
-                ColumnDefinition('updated_at', 'TIMESTAMP', nullable=False)
             ],
-            explicit_mappings={
-                'creation_date': 'created_at',
-                'update_date': 'updated_at'
-            },
             export_order=1
         ),
         
-        'categories': TableSchema.create(
-            columns=[
-                ColumnDefinition('id', 'VARCHAR', primary_key=True),
+        'categories': BaseEntitySchema.create_with_base(
+            additional_columns=[
                 ColumnDefinition('name', 'VARCHAR(255)', nullable=False),
                 ColumnDefinition('type', 'VARCHAR(255)', nullable=False),
-                ColumnDefinition('created_at', 'TIMESTAMP', nullable=False),
-                ColumnDefinition('updated_at', 'TIMESTAMP', nullable=False)
             ],
-            explicit_mappings={
-                'creation_date': 'created_at',
-                'update_date': 'updated_at'
-            },
             export_order=1
         ),
         
-        'targets': TableSchema.create(
-            columns=[
-                ColumnDefinition('id', 'VARCHAR', primary_key=True),
+        'targets': BaseEntitySchema.create_with_base(
+            additional_columns=[
                 ColumnDefinition('name', 'VARCHAR(255)', nullable=False),
-                ColumnDefinition('created_at', 'TIMESTAMP', nullable=False),
-                ColumnDefinition('updated_at', 'TIMESTAMP', nullable=False)
             ],
-            explicit_mappings={
-                'creation_date': 'created_at',
-                'update_date': 'updated_at'
-            },
             export_order=1
         ),
         
-        'users': TableSchema.create(
-            columns=[
-                ColumnDefinition('id', 'VARCHAR', primary_key=True),
+        'users': BaseEntitySchema.create_with_base(
+            additional_columns=[
                 ColumnDefinition('firstname', 'VARCHAR(255)', nullable=False),
                 ColumnDefinition('lastname', 'VARCHAR(255)', nullable=False),
                 ColumnDefinition('email', 'VARCHAR(255)', nullable=False),
                 ColumnDefinition('birthdate', 'DATE'),
                 ColumnDefinition('company_id', 'VARCHAR', foreign_key='companies(id)'),
                 ColumnDefinition('role', 'VARCHAR(100)', nullable=False),
-                ColumnDefinition('created_at', 'TIMESTAMP', nullable=False),
-                ColumnDefinition('updated_at', 'TIMESTAMP', nullable=False)
             ],
-            explicit_mappings={
-                'creation_date': 'created_at',
-                'update_date': 'updated_at',
+            additional_mappings={
                 'company': 'company_id'
             },
             export_order=2
         ),
         
-        'quizzs': TableSchema.create(
-            columns=[
-                ColumnDefinition('id', 'VARCHAR', primary_key=True),
+        'quizzs': BaseEntitySchema.create_with_base(
+            additional_columns=[
                 ColumnDefinition('name', 'VARCHAR(255)', nullable=False),
                 ColumnDefinition('type', 'VARCHAR(255)', nullable=False),
-                ColumnDefinition('created_at', 'TIMESTAMP', nullable=False),
-                ColumnDefinition('updated_at', 'TIMESTAMP', nullable=False)
             ],
-            explicit_mappings={
-                'creation_date': 'created_at',
-                'update_date': 'updated_at'
-            },
             export_order=2
         ),
         
-        'quizz_questions': TableSchema.create(
-            columns=[
-                ColumnDefinition('id', 'VARCHAR', primary_key=True),
+        'quizz_questions': BaseEntitySchema.create_with_base(
+            additional_columns=[
                 ColumnDefinition('quizz_id', 'VARCHAR', foreign_key='quizzs(id)'),
                 ColumnDefinition('title', 'VARCHAR', nullable=False),
                 ColumnDefinition('type', 'VARCHAR(100)'),
-                ColumnDefinition('created_at', 'TIMESTAMP', nullable=False),
-                ColumnDefinition('updated_at', 'TIMESTAMP', nullable=False)
             ],
             mongo_collection='quizzquestions',
-            explicit_mappings={
-                'creation_date': 'created_at',
-                'update_date': 'updated_at'
-            },
             export_order=3,
             import_strategy=_create_quizz_questions_strategy()
         ),
         
-        'user_quizzs': TableSchema.create(
-            columns=[
-                ColumnDefinition('id', 'VARCHAR', primary_key=True),
+        'user_quizzs': BaseEntitySchema.create_with_base(
+            additional_columns=[
                 ColumnDefinition('quizz_id', 'VARCHAR', foreign_key='quizzs(id)'),
                 ColumnDefinition('name', 'VARCHAR', nullable=False),
                 ColumnDefinition('type', 'VARCHAR(100)'),
-                ColumnDefinition('created_at', 'TIMESTAMP', nullable=False),
-                ColumnDefinition('updated_at', 'TIMESTAMP', nullable=False)
             ],
-            explicit_mappings={
-                'creation_date': 'created_at',
-                'update_date': 'updated_at',
+            additional_mappings={
                 'quizz': 'quizz_id'
             },
             mongo_collection='userquizzs',
             export_order=3
         ),
         
-        'messages': TableSchema.create(
-            columns=[
-                ColumnDefinition('id', 'VARCHAR', primary_key=True),
+        'messages': BaseEntitySchema.create_with_base(
+            additional_columns=[
                 ColumnDefinition('sender_id', 'VARCHAR', foreign_key='users(id)'),
                 ColumnDefinition('receiver_id', 'VARCHAR', foreign_key='users(id)'),
                 ColumnDefinition('content', 'TEXT', nullable=False),
-                ColumnDefinition('created_at', 'TIMESTAMP', nullable=False),
-                ColumnDefinition('updated_at', 'TIMESTAMP', nullable=False)
             ],
-            explicit_mappings={
-                'creation_date': 'created_at',
-                'update_date': 'updated_at',
+            additional_mappings={
                 'sender': 'sender_id',
                 'receiver': 'receiver_id'
             },
             export_order=3
         ),
         
-        'coachings': TableSchema.create(
-            columns=[
-                ColumnDefinition('id', 'VARCHAR', primary_key=True),
+        'coachings': BaseEntitySchema.create_with_base(
+            additional_columns=[
                 ColumnDefinition('user_id', 'VARCHAR', foreign_key='users(id)'),
                 ColumnDefinition('diet_id', 'VARCHAR', foreign_key='users(id)'),
                 ColumnDefinition('offer_id', 'VARCHAR', foreign_key='offers(id)'),
                 ColumnDefinition('status', 'VARCHAR(100)', nullable=False),
-                ColumnDefinition('created_at', 'TIMESTAMP', nullable=False),
-                ColumnDefinition('updated_at', 'TIMESTAMP', nullable=False)
             ],
-            explicit_mappings={
-                'creation_date': 'created_at',
-                'update_date': 'updated_at',
+            additional_mappings={
                 'user': 'user_id',
                 'diet': 'diet_id',
                 'offer': 'offer_id'
@@ -253,27 +177,21 @@ def create_schemas():
             export_order=3
         ),
         
-        'user_quizz_questions': TableSchema.create(
-            columns=[
-                ColumnDefinition('id', 'VARCHAR', primary_key=True),
+        'user_quizz_questions': BaseEntitySchema.create_with_base(
+            additional_columns=[
                 ColumnDefinition('user_quizz_id', 'VARCHAR', foreign_key='user_quizzs(id)'),
                 ColumnDefinition('quizz_question_id', 'VARCHAR', foreign_key='quizz_questions(id)'),
-                ColumnDefinition('created_at', 'TIMESTAMP', nullable=False),
-                ColumnDefinition('updated_at', 'TIMESTAMP', nullable=False)
             ],
             mongo_collection='userquizzquestions',
-            explicit_mappings={
-                'creation_date': 'created_at',
-                'update_date': 'updated_at',
+            additional_mappings={
                 'quizz_question': 'quizz_question_id'
             },
             export_order=4,
             import_strategy=_create_user_quizz_questions_strategy()
         ),
         
-        'appointments': TableSchema.create(
-            columns=[
-                ColumnDefinition('id', 'VARCHAR', primary_key=True),
+        'appointments': BaseEntitySchema.create_with_base(
+            additional_columns=[
                 ColumnDefinition('user_id', 'VARCHAR', foreign_key='users(id)'),
                 ColumnDefinition('coaching_id', 'VARCHAR', foreign_key='coachings(id)'),
                 ColumnDefinition('type_id', 'VARCHAR', foreign_key='appointment_types(id)'),
@@ -281,12 +199,8 @@ def create_schemas():
                 ColumnDefinition('end_date', 'DATE', nullable=False),
                 ColumnDefinition('validated', 'BOOLEAN'),
                 ColumnDefinition('order_nb', 'SMALLINT', nullable=False),
-                ColumnDefinition('created_at', 'TIMESTAMP', nullable=False),
-                ColumnDefinition('updated_at', 'TIMESTAMP', nullable=False)
             ],
-            explicit_mappings={
-                'creation_date': 'created_at',
-                'update_date': 'updated_at',
+            additional_mappings={
                 'user': 'user_id',
                 'coaching': 'coaching_id',
                 'appointment_type': 'type_id',
@@ -295,19 +209,14 @@ def create_schemas():
             export_order=4
         ),
         
-        'coachings_logbooks': TableSchema.create(
-            columns=[
-                ColumnDefinition('id', 'VARCHAR', primary_key=True),
+        'coachings_logbooks': BaseEntitySchema.create_with_base(
+            additional_columns=[
                 ColumnDefinition('day', 'DATE', nullable=False),
                 ColumnDefinition('user_id', 'VARCHAR', foreign_key='users(id)'),
                 ColumnDefinition('coaching_id', 'VARCHAR', foreign_key='coachings(id)'),
                 ColumnDefinition('user_quizz_id', 'VARCHAR', foreign_key='user_quizzs(id)'),
-                ColumnDefinition('created_at', 'TIMESTAMP', nullable=False),
-                ColumnDefinition('updated_at', 'TIMESTAMP', nullable=False)
             ],
-            explicit_mappings={
-                'creation_date': 'created_at',
-                'update_date': 'updated_at',
+            additional_mappings={
                 'user': 'user_id',
                 'coaching': 'coaching_id',
                 'logbook': 'user_quizz_id'

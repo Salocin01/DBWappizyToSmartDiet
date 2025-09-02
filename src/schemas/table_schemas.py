@@ -42,10 +42,6 @@ class TableSchema:
         
         field_mappings = {col.name: col.name for col in columns if col.name not in excluded_columns}
         
-        # Add default MongoDB _id mapping if 'id' column exists
-        if any(col.name == 'id' for col in columns):
-            field_mappings['_id'] = 'id'
-        
         # Override with explicit mappings if provided
         if explicit_mappings:
             field_mappings.update(explicit_mappings)
@@ -73,4 +69,60 @@ class TableSchema:
             {',\n            '.join(all_defs)}
         );
         """
+
+
+class BaseEntitySchema:
+    """Base class for entity schemas with common columns and mappings"""
+    
+    @classmethod
+    def get_base_columns(cls) -> List[ColumnDefinition]:
+        """Returns the standard columns that all entities should have"""
+        return [
+            ColumnDefinition('id', 'VARCHAR', primary_key=True),
+            ColumnDefinition('created_at', 'TIMESTAMP', nullable=False),
+            ColumnDefinition('updated_at', 'TIMESTAMP', nullable=False)
+        ]
+    
+    @classmethod
+    def get_base_mappings(cls) -> Dict[str, str]:
+        """Returns the standard field mappings that all entities should have"""
+        return {
+            '_id': 'id',
+            'creation_date': 'created_at',
+            'update_date': 'updated_at'
+        }
+    
+    @classmethod
+    def create_with_base(cls, additional_columns: List[ColumnDefinition] = None, 
+                        name: Optional[str] = None, mongo_collection: Optional[str] = None,
+                        additional_mappings: Optional[Dict[str, str]] = None, 
+                        export_order: int = 0, import_strategy: Optional[Any] = None) -> TableSchema:
+        """Create a TableSchema with base columns and mappings plus additional ones.
+        
+        Args:
+            additional_columns: Additional columns beyond the base ones
+            name: Table name (will be set from schema key if not specified)
+            mongo_collection: MongoDB collection name (defaults to table name if not specified)
+            additional_mappings: Additional mappings beyond the base ones
+            export_order: Export order for the table
+            import_strategy: Import strategy for the table
+        """
+        # Combine base columns with additional columns
+        columns = cls.get_base_columns()
+        if additional_columns:
+            columns.extend(additional_columns)
+        
+        # Combine base mappings with additional mappings
+        explicit_mappings = cls.get_base_mappings()
+        if additional_mappings:
+            explicit_mappings.update(additional_mappings)
+        
+        return TableSchema.create(
+            columns=columns,
+            name=name,
+            mongo_collection=mongo_collection,
+            explicit_mappings=explicit_mappings,
+            export_order=export_order,
+            import_strategy=import_strategy
+        )
 

@@ -7,7 +7,6 @@ from datetime import datetime, time
 
 # Control whether to use batch processing (True) or single-line SQL statements (False)
 IMPORT_BY_BATCH = True
-
 # Control whether to execute SQL directly (True) or generate SQL files (False)
 DIRECT_IMPORT = True
 
@@ -65,10 +64,50 @@ class ImportUtils:
         return successful_count
     
     @staticmethod
-    def execute_batch(conn, batch_values, columns, table_name, summary_instance, use_on_conflict=False):
-        """Execute insert with error handling and progress tracking or generate SQL files"""
+    def write_sql_file(batch_values, columns, table_name, summary_instance, use_on_conflict=False):
+        """Generate SQL file for batch values"""
         from .import_summary import ImportSummary
         import os
+        
+        if not batch_values or not columns:
+            return 0
+            
+        summary = summary_instance or ImportSummary()
+        
+        on_conflict_clause = " ON CONFLICT (id) DO NOTHING" if use_on_conflict else ""
+        
+        # Generate SQL file
+        os.makedirs("sql_exports", exist_ok=True)
+        sql_file_path = f"sql_exports/{table_name}_import.sql"
+        
+        with open(sql_file_path, 'a', encoding='utf-8') as f:
+            for values in batch_values:
+                # Format values for SQL file
+                formatted_values = []
+                for value in values:
+                    if value is None:
+                        formatted_values.append('NULL')
+                    elif isinstance(value, str):
+                        # Escape single quotes in strings
+                        escaped_value = value.replace("'", "''")
+                        formatted_values.append(f"'{escaped_value}'")
+                    elif isinstance(value, datetime):
+                        formatted_values.append(f"'{value.isoformat()}'")
+                    else:
+                        formatted_values.append(str(value))
+                
+                sql_statement = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({', '.join(formatted_values)}){on_conflict_clause};\n"
+                f.write(sql_statement)
+        
+        # Record as successful for tracking purposes
+        summary.record_success(table_name, len(batch_values))
+        print(f"Generated SQL for {len(batch_values)} records in {sql_file_path}")
+        return len(batch_values)
+    
+    @staticmethod
+    def execute_direct_sql(conn, batch_values, columns, table_name, summary_instance, use_on_conflict=False):
+        """Execute SQL queries directly on the database"""
+        from .import_summary import ImportSummary
         
         if not batch_values or not columns:
             return 0
@@ -79,36 +118,6 @@ class ImportUtils:
         on_conflict_clause = " ON CONFLICT (id) DO NOTHING" if use_on_conflict else ""
         sql_template = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders}){on_conflict_clause}"
         
-        if not DIRECT_IMPORT:
-            # Generate SQL file instead of executing
-            os.makedirs("sql_exports", exist_ok=True)
-            sql_file_path = f"sql_exports/{table_name}_import.sql"
-            
-            with open(sql_file_path, 'a', encoding='utf-8') as f:
-                for values in batch_values:
-                    # Format values for SQL file
-                    formatted_values = []
-                    for value in values:
-                        if value is None:
-                            formatted_values.append('NULL')
-                        elif isinstance(value, str):
-                            # Escape single quotes in strings
-                            escaped_value = value.replace("'", "''")
-                            formatted_values.append(f"'{escaped_value}'")
-                        elif isinstance(value, datetime):
-                            formatted_values.append(f"'{value.isoformat()}'")
-                        else:
-                            formatted_values.append(str(value))
-                    
-                    sql_statement = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({', '.join(formatted_values)}){on_conflict_clause};\n"
-                    f.write(sql_statement)
-            
-            # Record as successful for tracking purposes
-            summary.record_success(table_name, len(batch_values))
-            print(f"Generated SQL for {len(batch_values)} records in {sql_file_path}")
-            return len(batch_values)
-        
-        # Direct execution (original behavior)
         cursor = conn.cursor()
         
         try:
@@ -152,6 +161,18 @@ class ImportUtils:
         except psycopg2.IntegrityError:
             return ImportUtils.handle_batch_errors(
                 conn, cursor, sql_template, batch_values, table_name, summary_instance
+            )
+    
+    @staticmethod
+    def execute_batch(conn, batch_values, columns, table_name, summary_instance, use_on_conflict=False):
+        """Execute insert with error handling and progress tracking or generate SQL files"""
+        if DIRECT_IMPORT:
+            return ImportUtils.execute_direct_sql(
+                conn, batch_values, columns, table_name, summary_instance, use_on_conflict
+            )
+        else:
+            return ImportUtils.write_sql_file(
+                batch_values, columns, table_name, summary_instance, use_on_conflict
             )
 
 

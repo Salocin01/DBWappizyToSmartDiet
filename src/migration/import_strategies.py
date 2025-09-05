@@ -39,15 +39,21 @@ class ImportUtils:
         from .import_summary import ImportSummary
         summary = summary_instance or ImportSummary()
         
-        conn.rollback()
+        # Close the old cursor and get a fresh one after rollback
+        cursor.close()
+        cursor = conn.cursor()
+        
         successful_count = 0
         
         for values in batch_values:
+            cursor.execute("SAVEPOINT individual_retry")
             try:
                 cursor.execute(sql, values)
+                cursor.execute("RELEASE SAVEPOINT individual_retry")
                 summary.record_success(table_name)
                 successful_count += 1
             except psycopg2.IntegrityError as individual_e:
+                cursor.execute("ROLLBACK TO SAVEPOINT individual_retry")
                 error_message = str(individual_e).lower()
                 failed_record = {'id': values[0] if values else 'unknown', 'values': values}
                 
@@ -57,12 +63,81 @@ class ImportUtils:
                     summary.record_error(table_name, 'NULL constraint', failed_record)
                 else:
                     summary.record_error(table_name, f'Other integrity error: {str(individual_e)[:100]}', failed_record)
-                conn.rollback()
+                continue
+            except Exception as e:
+                cursor.execute("ROLLBACK TO SAVEPOINT individual_retry")
+                failed_record = {'id': values[0] if values else 'unknown', 'values': values}
+                summary.record_error(table_name, f'Unexpected error: {str(e)[:100]}', failed_record)
                 continue
         
         conn.commit()
+        cursor.close()
         return successful_count
     
+    @staticmethod
+    def execute_sql_file(conn, sql_file_path, summary_instance):
+        """Execute SQL file against the database"""
+        from .import_summary import ImportSummary
+        import os
+        
+        summary = summary_instance or ImportSummary()
+        
+        if not os.path.exists(sql_file_path):
+            return 0
+            
+        cursor = conn.cursor()
+        executed_count = 0
+        failed_count = 0
+        
+        try:
+            with open(sql_file_path, 'r', encoding='utf-8') as f:
+                sql_content = f.read()
+                
+            # Split by semicolons and execute each statement
+            statements = [stmt.strip() for stmt in sql_content.split(';') if stmt.strip()]
+            
+            for i, statement in enumerate(statements):
+                cursor.execute("SAVEPOINT sql_statement")
+                try:
+                    cursor.execute(statement)
+                    cursor.execute("RELEASE SAVEPOINT sql_statement")
+                    executed_count += 1
+                except psycopg2.IntegrityError as e:
+                    cursor.execute("ROLLBACK TO SAVEPOINT sql_statement")
+                    failed_count += 1
+                    # Extract table name from INSERT statement for better tracking
+                    table_name = "unknown"
+                    if "INSERT INTO" in statement.upper():
+                        try:
+                            table_name = statement.upper().split("INSERT INTO")[1].split()[0]
+                        except:
+                            pass
+                    summary.record_error(table_name, f'SQL file integrity error: {str(e)[:100]}', {'statement_index': i})
+                    continue
+                except Exception as e:
+                    cursor.execute("ROLLBACK TO SAVEPOINT sql_statement")
+                    failed_count += 1
+                    table_name = "unknown"
+                    if "INSERT INTO" in statement.upper():
+                        try:
+                            table_name = statement.upper().split("INSERT INTO")[1].split()[0]
+                        except:
+                            pass
+                    summary.record_error(table_name, f'SQL file execution error: {str(e)[:100]}', {'statement_index': i})
+                    print(f"Error executing SQL statement {i+1}: {e}")
+                    continue
+            
+            conn.commit()
+            print(f"SQL file execution completed: {executed_count} successful, {failed_count} failed")
+            return executed_count
+            
+        except Exception as e:
+            print(f"Error reading SQL file {sql_file_path}: {e}")
+            conn.rollback()
+            return 0
+        finally:
+            cursor.close()
+
     @staticmethod
     def write_sql_file(batch_values, columns, table_name, summary_instance, use_on_conflict=False):
         """Generate SQL file for batch values"""
@@ -122,27 +197,50 @@ class ImportUtils:
         
         try:
             if IMPORT_BY_BATCH:
-                # Use batch processing (executemany)
-                cursor.executemany(sql_template, batch_values)
-                actual_insertions = cursor.rowcount
-                skipped_count = len(batch_values) - actual_insertions
-                
-                summary.record_success(table_name, actual_insertions)
-                if skipped_count > 0:
-                    summary.record_skipped(table_name, skipped_count)
-                
-                conn.commit()
-                return actual_insertions
+                # Use transaction savepoint for batch processing
+                cursor.execute("SAVEPOINT batch_insert")
+                try:
+                    cursor.executemany(sql_template, batch_values)
+                    actual_insertions = cursor.rowcount
+                    
+                    # Verify actual insertions by counting rows
+                    if not use_on_conflict:
+                        # For non-conflict queries, rowcount should match batch size
+                        if actual_insertions != len(batch_values):
+                            cursor.execute("ROLLBACK TO SAVEPOINT batch_insert")
+                            # Fall back to individual processing
+                            return ImportUtils.handle_batch_errors(
+                                conn, cursor, sql_template, batch_values, table_name, summary_instance
+                            )
+                    
+                    cursor.execute("RELEASE SAVEPOINT batch_insert")
+                    skipped_count = len(batch_values) - actual_insertions
+                    
+                    summary.record_success(table_name, actual_insertions)
+                    if skipped_count > 0:
+                        summary.record_skipped(table_name, skipped_count)
+                    
+                    conn.commit()
+                    return actual_insertions
+                    
+                except psycopg2.IntegrityError:
+                    cursor.execute("ROLLBACK TO SAVEPOINT batch_insert")
+                    # Fall back to individual processing
+                    return ImportUtils.handle_batch_errors(
+                        conn, cursor, sql_template, batch_values, table_name, summary_instance
+                    )
             else:
-                # Use single-line SQL statements
+                # Use individual transactions with savepoints
                 successful_count = 0
                 for values in batch_values:
-                    
+                    cursor.execute("SAVEPOINT individual_insert")
                     try:
                         cursor.execute(sql_template, values)
+                        cursor.execute("RELEASE SAVEPOINT individual_insert")
                         summary.record_success(table_name)
                         successful_count += 1
                     except psycopg2.IntegrityError as e:
+                        cursor.execute("ROLLBACK TO SAVEPOINT individual_insert")
                         error_message = str(e).lower()
                         failed_record = {'id': values[0] if values else 'unknown', 'values': values}
                         
@@ -152,16 +250,18 @@ class ImportUtils:
                             summary.record_error(table_name, 'NULL constraint', failed_record)
                         else:
                             summary.record_error(table_name, f'Other integrity error: {str(e)[:100]}', failed_record)
-                        conn.rollback()
                         continue
                 
                 conn.commit()
                 return successful_count
             
-        except psycopg2.IntegrityError:
-            return ImportUtils.handle_batch_errors(
-                conn, cursor, sql_template, batch_values, table_name, summary_instance
-            )
+        except Exception as e:
+            conn.rollback()
+            cursor.close()
+            cursor = conn.cursor()  # Get fresh cursor
+            raise e
+        finally:
+            cursor.close()
     
     @staticmethod
     def execute_batch(conn, batch_values, columns, table_name, summary_instance, use_on_conflict=False):
@@ -171,6 +271,7 @@ class ImportUtils:
                 conn, batch_values, columns, table_name, summary_instance, use_on_conflict
             )
         else:
+            # Generate SQL file (accumulate without executing)
             return ImportUtils.write_sql_file(
                 batch_values, columns, table_name, summary_instance, use_on_conflict
             )
@@ -246,11 +347,9 @@ class DirectTranslationStrategy(ImportStrategy):
         
         summary = config.summary_instance or ImportSummary()
         
-        # Clear SQL file if we're generating SQL instead of executing
+        # Ensure SQL exports directory exists
         if not DIRECT_IMPORT:
-            sql_file_path = f"sql_exports/{config.table_name}_import.sql"
-            if os.path.exists(sql_file_path):
-                os.remove(sql_file_path)
+            os.makedirs("sql_exports", exist_ok=True)
         
         if DIRECT_IMPORT:
             cursor = conn.cursor()
@@ -298,6 +397,14 @@ class DirectTranslationStrategy(ImportStrategy):
         
         if DIRECT_IMPORT:
             cursor.close()
+        else:
+            # Execute the accumulated SQL file as one entity row
+            sql_file_path = f"sql_exports/{config.table_name}_import.sql"
+            if os.path.exists(sql_file_path):
+                executed_count = ImportUtils.execute_sql_file(conn, sql_file_path, config.summary_instance)
+                os.remove(sql_file_path)
+                print(f"Executed and deleted SQL file: {sql_file_path} ({executed_count} statements)")
+                return executed_count
 
 
 @dataclass
@@ -384,11 +491,9 @@ class ArrayExtractionStrategy(ImportStrategy):
         from src.connections.mongo_connection import get_mongo_collection
         import os
         
-        # Clear SQL file if we're generating SQL instead of executing
+        # Ensure SQL exports directory exists
         if not DIRECT_IMPORT:
-            sql_file_path = f"sql_exports/{config.table_name}_import.sql"
-            if os.path.exists(sql_file_path):
-                os.remove(sql_file_path)
+            os.makedirs("sql_exports", exist_ok=True)
         
         if DIRECT_IMPORT:
             cursor = conn.cursor()
@@ -434,6 +539,14 @@ class ArrayExtractionStrategy(ImportStrategy):
         
         if DIRECT_IMPORT:
             cursor.close()
+        else:
+            # Execute the accumulated SQL file as one entity row
+            sql_file_path = f"sql_exports/{config.table_name}_import.sql"
+            if os.path.exists(sql_file_path):
+                executed_count = ImportUtils.execute_sql_file(conn, sql_file_path, config.summary_instance)
+                os.remove(sql_file_path)
+                print(f"Executed and deleted SQL file: {sql_file_path} ({executed_count} statements)")
+                return executed_count
     
     def _default_transform(self, parent_id, child_doc):
         """Default transformation - override with custom transformer if needed"""

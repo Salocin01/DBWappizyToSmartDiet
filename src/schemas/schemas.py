@@ -54,6 +54,42 @@ def _create_user_quizz_questions_strategy():
     return ArrayExtractionStrategy(config)
 
 
+def _create_user_events_strategy():
+    """Create strategy for user_events array extraction"""
+    from src.migration.import_strategies import ArrayExtractionStrategy, ArrayExtractionConfig
+    
+    def user_events_transformer(parent_id, event_doc):
+        # Handle case where event_doc is ObjectId instead of document
+        if hasattr(event_doc, 'get') and '_id' in event_doc:
+            # event_doc is a document with _id
+            event_id = str(event_doc['_id'])
+            date_value = event_doc.get('date', None)
+        else:
+            # event_doc is just an ObjectId or document without _id
+            event_id = str(event_doc)
+            date_value = None
+        
+        return [
+            f"{parent_id}_{event_id}",  # Composite ID
+            parent_id,
+            event_id,  # event_id is the ObjectId of the event
+            date_value,
+            date_value
+        ]
+    
+    config = ArrayExtractionConfig(
+        parent_collection='users',
+        array_field='registered_events',
+        child_collection='events',  # Events are stored in separate collection
+        parent_filter_fields={'_id': 1, 'registered_events': 1},
+        child_projection_fields={'_id': 1, 'date': 1},  # Only need _id and date
+        sql_columns=['id', 'user_id', 'event_id', 'created_at', 'updated_at'],
+        value_transformer=user_events_transformer
+    )
+    
+    return ArrayExtractionStrategy(config)
+
+
 def create_schemas():
     schemas = {
         'ingredients': BaseEntitySchema.create_with_base(
@@ -102,6 +138,21 @@ def create_schemas():
             export_order=1
         ),
         
+        'events': BaseEntitySchema.create_with_base(
+            additional_columns=[
+                ColumnDefinition('name', 'VARCHAR(255)', nullable=False),
+                ColumnDefinition('type', 'VARCHAR(255)', nullable=False),
+                ColumnDefinition('start_date', 'TIMESTAMP', nullable=False),
+                ColumnDefinition('end_date', 'TIMESTAMP', nullable=False),
+                ColumnDefinition('company_id', 'VARCHAR', foreign_key='companies(id)')
+            ],
+            additional_mappings={
+                'company': 'company_id',
+                '__t': 'type',
+            },
+            export_order=2
+        ),
+        
         'users': BaseEntitySchema.create_with_base(
             additional_columns=[
                 ColumnDefinition('firstname', 'VARCHAR(255)', nullable=False),
@@ -134,6 +185,16 @@ def create_schemas():
             mongo_collection='quizzquestions',
             export_order=3,
             import_strategy=_create_quizz_questions_strategy()
+        ),
+        
+        'user_events': BaseEntitySchema.create_with_base(
+            additional_columns=[
+                ColumnDefinition('user_id', 'VARCHAR', foreign_key='users(id)'),
+                ColumnDefinition('event_id', 'VARCHAR', foreign_key='events(id)')
+            ],
+            mongo_collection='users',
+            export_order=3,
+            import_strategy=_create_user_events_strategy()
         ),
         
         'user_quizzs': BaseEntitySchema.create_with_base(

@@ -279,10 +279,6 @@ class ImportUtils:
 
 class ImportStrategy(ABC):
     @abstractmethod
-    def export_data(self, conn, collection, config: ImportConfig):
-        pass
-    
-    @abstractmethod
     def count_total_documents(self, collection, config: ImportConfig) -> int:
         """Count total documents that will be processed"""
         pass
@@ -296,6 +292,89 @@ class ImportStrategy(ABC):
     def extract_data_for_sql(self, document, config: ImportConfig):
         """Extract and prepare data from a single document for SQL insertion"""
         pass
+    
+    def get_use_on_conflict(self) -> bool:
+        """Override in subclasses if ON CONFLICT clause is needed"""
+        return False
+    
+    def get_progress_message(self, processed: int, total: int, table_name: str, **kwargs) -> str:
+        """Override in subclasses for custom progress messages"""
+        return f"Processed {processed}/{total} documents for {table_name}"
+    
+    def export_data(self, conn, collection, config: ImportConfig):
+        """Generic export implementation that works for both strategies"""
+        import os
+        
+        # Ensure SQL exports directory exists
+        if not DIRECT_IMPORT:
+            os.makedirs("sql_exports", exist_ok=True)
+        
+        if DIRECT_IMPORT:
+            cursor = conn.cursor()
+        
+        # Get total count for progress tracking
+        total_docs = self.count_total_documents(collection, config)
+        processed_docs = 0
+        total_records = 0
+        
+        # Process documents in batches
+        offset = 0
+        while True:
+            documents = self.get_documents(collection, config, offset)
+            
+            if not documents:
+                break
+            
+            batch_values = []
+            columns = None
+            
+            for doc in documents:
+                values, doc_columns = self.extract_data_for_sql(doc, config)
+                if values is not None:
+                    if columns is None:
+                        columns = doc_columns
+                    # Handle both single records and multiple records per document
+                    if isinstance(values, list) and len(values) > 0 and isinstance(values[0], list):
+                        batch_values.extend(values)
+                    else:
+                        batch_values.append(values)
+            
+            if batch_values:
+                actual_insertions = ImportUtils.execute_batch(
+                    conn, batch_values, columns, config.table_name, 
+                    config.summary_instance, use_on_conflict=self.get_use_on_conflict()
+                )
+                total_records += actual_insertions
+                
+                if DIRECT_IMPORT:
+                    skipped_count = len(batch_values) - actual_insertions
+                    print(self.get_progress_message(
+                        processed_docs + len(documents), total_docs, config.table_name,
+                        tried=len(batch_values), inserted=actual_insertions, skipped=skipped_count,
+                        total_records=total_records
+                    ))
+                else:
+                    print(f"Generated SQL for {total_records} records from {processed_docs + len(documents)}/{total_docs} documents for {config.table_name}")
+            
+            processed_docs += len(documents)
+            offset += config.batch_size
+            
+            if len(documents) < config.batch_size:
+                break
+        
+        action = "processing" if DIRECT_IMPORT else "SQL generation for"
+        print(f"Completed {action} {total_records} records from {processed_docs} documents for {config.table_name}")
+        
+        if DIRECT_IMPORT:
+            cursor.close()
+        else:
+            # Execute the accumulated SQL file as one entity row
+            sql_file_path = f"sql_exports/{config.table_name}_import.sql"
+            if os.path.exists(sql_file_path):
+                executed_count = ImportUtils.execute_sql_file(conn, sql_file_path, config.summary_instance)
+                os.remove(sql_file_path)
+                print(f"Executed and deleted SQL file: {sql_file_path} ({executed_count} statements)")
+                return executed_count
 
 
 class DirectTranslationStrategy(ImportStrategy):
@@ -340,71 +419,11 @@ class DirectTranslationStrategy(ImportStrategy):
         
         return values, columns
     
-    def export_data(self, conn, collection, config: ImportConfig):
-        from src.schemas.schemas import TABLE_SCHEMAS
-        from .import_summary import ImportSummary
-        import os
-        
-        summary = config.summary_instance or ImportSummary()
-        
-        # Ensure SQL exports directory exists
-        if not DIRECT_IMPORT:
-            os.makedirs("sql_exports", exist_ok=True)
-        
-        if DIRECT_IMPORT:
-            cursor = conn.cursor()
-        
-        # Get total count for progress tracking
-        total_docs = self.count_total_documents(collection, config)
-        processed_docs = 0
-        
-        # Process documents in batches
-        offset = 0
-        while True:
-            documents = self.get_documents(collection, config, offset)
-            
-            if not documents:
-                break
-            
-            batch_values = []
-            columns = None
-            
-            for doc in documents:
-                values, doc_columns = self.extract_data_for_sql(doc, config)
-                if values is not None:
-                    if columns is None:
-                        columns = doc_columns
-                    batch_values.append(values)
-            
-            if batch_values:
-                actual_insertions = ImportUtils.execute_batch(
-                    conn, batch_values, columns, config.table_name, config.summary_instance
-                )
-                processed_docs += actual_insertions
-                if DIRECT_IMPORT:
-                    skipped_count = len(batch_values) - actual_insertions
-                    print(f"Processed {processed_docs}/{total_docs} documents for {config.table_name} (tried {len(batch_values)}, inserted {actual_insertions}, skipped {skipped_count})")
-                else:
-                    print(f"Generated SQL for {processed_docs}/{total_docs} documents for {config.table_name}")
-            
-            offset += config.batch_size
-            
-            if len(documents) < config.batch_size:
-                break
-        
-        action = "processing" if DIRECT_IMPORT else "SQL generation for"
-        print(f"Completed {action} {processed_docs} documents for {config.table_name}")
-        
-        if DIRECT_IMPORT:
-            cursor.close()
-        else:
-            # Execute the accumulated SQL file as one entity row
-            sql_file_path = f"sql_exports/{config.table_name}_import.sql"
-            if os.path.exists(sql_file_path):
-                executed_count = ImportUtils.execute_sql_file(conn, sql_file_path, config.summary_instance)
-                os.remove(sql_file_path)
-                print(f"Executed and deleted SQL file: {sql_file_path} ({executed_count} statements)")
-                return executed_count
+    def get_progress_message(self, processed: int, total: int, table_name: str, **kwargs) -> str:
+        tried = kwargs.get('tried', 0)
+        inserted = kwargs.get('inserted', 0)
+        skipped = kwargs.get('skipped', 0)
+        return f"Processed {processed}/{total} documents for {table_name} (tried {tried}, inserted {inserted}, skipped {skipped})"
 
 
 @dataclass
@@ -456,97 +475,65 @@ class ArrayExtractionStrategy(ImportStrategy):
         child_collection = get_mongo_collection(self.config.child_collection) if self.config.child_collection else None
         
         parent_id = str(document['_id'])
-        child_ids = document.get(self.config.array_field, [])
+        array_items = document.get(self.config.array_field, [])
         
-        if not child_ids:
+        if not array_items:
             return [], self.config.sql_columns
-        
-        # Fetch all child documents for this parent
-        children_docs = {}
-        if child_collection is not None:
-            child_cursor = child_collection.find(
-                {'_id': {'$in': child_ids}},
-                self.config.child_projection_fields
-            )
-            for child_doc in child_cursor:
-                children_docs[child_doc['_id']] = child_doc
         
         # Build values for all children of this parent
         batch_values = []
-        for child_id in child_ids:
-            if child_id in children_docs:
-                child_doc = children_docs[child_id]
-                if self.config.value_transformer:
-                    values = self.config.value_transformer(parent_id, child_doc)
-                else:
-                    values = self._default_transform(parent_id, child_doc)
-                batch_values.append(values)
+        
+        if child_collection is not None:
+            # Traditional case: array contains ObjectIds referencing separate documents
+            # Check if array_items contains ObjectIds or embedded documents
+            if array_items and isinstance(array_items[0], dict):
+                # Array contains embedded documents, process them directly
+                for child_doc in array_items:
+                    if self.config.value_transformer:
+                        values = self.config.value_transformer(parent_id, child_doc)
+                    else:
+                        values = self._default_transform(parent_id, child_doc)
+                    batch_values.append(values)
             else:
-                failed_record = {'id': str(child_id), 'parent_id': parent_id}
-                summary.record_error(config.table_name, 'Child document not found', failed_record)
+                # Array contains ObjectIds
+                child_ids = array_items
+                children_docs = {}
+                child_cursor = child_collection.find(
+                    {'_id': {'$in': child_ids}},
+                    self.config.child_projection_fields
+                )
+                for child_doc in child_cursor:
+                    children_docs[child_doc['_id']] = child_doc
+                
+                for child_id in child_ids:
+                    if child_id in children_docs:
+                        child_doc = children_docs[child_id]
+                        if self.config.value_transformer:
+                            values = self.config.value_transformer(parent_id, child_doc)
+                        else:
+                            values = self._default_transform(parent_id, child_doc)
+                        batch_values.append(values)
+                    else:
+                        failed_record = {'id': str(child_id), 'parent_id': parent_id}
+                        summary.record_error(config.table_name, 'Child document not found', failed_record)
+        else:
+            # New case: array contains embedded documents directly
+            for array_item in array_items:
+                if self.config.value_transformer:
+                    values = self.config.value_transformer(parent_id, array_item)
+                else:
+                    values = self._default_transform(parent_id, array_item)
+                batch_values.append(values)
         
         return batch_values, self.config.sql_columns
     
-    def export_data(self, conn, collection, config: ImportConfig):
-        from src.connections.mongo_connection import get_mongo_collection
-        import os
-        
-        # Ensure SQL exports directory exists
-        if not DIRECT_IMPORT:
-            os.makedirs("sql_exports", exist_ok=True)
-        
-        if DIRECT_IMPORT:
-            cursor = conn.cursor()
-        
-        total_parents = self.count_total_documents(collection, config)
-        processed_parents = 0
-        total_children = 0
-        
-        offset = 0
-        while True:
-            parents = self.get_documents(collection, config, offset)
-            
-            if not parents:
-                break
-            
-            batch_values = []
-            columns = None
-            
-            for parent in parents:
-                parent_batch_values, doc_columns = self.extract_data_for_sql(parent, config)
-                if parent_batch_values:
-                    if columns is None:
-                        columns = doc_columns
-                    batch_values.extend(parent_batch_values)
-            
-            if batch_values:
-                actual_insertions = ImportUtils.execute_batch(
-                    conn, batch_values, columns, config.table_name, config.summary_instance, use_on_conflict=True
-                )
-                total_children += actual_insertions
-            
-            processed_parents += len(parents)
-            action = "Processed" if DIRECT_IMPORT else "Generated SQL for"
-            print(f"{action} {processed_parents}/{total_parents} {self.config.parent_collection}, {total_children} {config.table_name}")
-            
-            offset += config.batch_size
-            
-            if len(parents) < config.batch_size:
-                break
-        
-        action = "processing" if DIRECT_IMPORT else "SQL generation for"
-        print(f"Completed {action} {total_children} records from {processed_parents} {self.config.parent_collection}")
-        
-        if DIRECT_IMPORT:
-            cursor.close()
-        else:
-            # Execute the accumulated SQL file as one entity row
-            sql_file_path = f"sql_exports/{config.table_name}_import.sql"
-            if os.path.exists(sql_file_path):
-                executed_count = ImportUtils.execute_sql_file(conn, sql_file_path, config.summary_instance)
-                os.remove(sql_file_path)
-                print(f"Executed and deleted SQL file: {sql_file_path} ({executed_count} statements)")
-                return executed_count
+    def get_use_on_conflict(self) -> bool:
+        return True
+    
+    def get_progress_message(self, processed: int, total: int, table_name: str, **kwargs) -> str:
+        total_records = kwargs.get('total_records', 0)
+        action = "Processed" if DIRECT_IMPORT else "Generated SQL for"
+        return f"{action} {processed}/{total} {self.config.parent_collection}, {total_records} {table_name}"
     
     def _default_transform(self, parent_id, child_doc):
         """Default transformation - override with custom transformer if needed"""

@@ -60,9 +60,9 @@ def _create_user_events_strategy():
     
     def user_events_transformer(parent_id, event_doc):
         # Handle case where event_doc is ObjectId instead of document
-        if hasattr(event_doc, 'get') and '_id' in event_doc:
+        if hasattr(event_doc, 'get') and 'event' in event_doc:
             # event_doc is a document with _id
-            event_id = str(event_doc['_id'])
+            event_id = str(event_doc.get('event', None))
             date_value = event_doc.get('date', None)
         else:
             # event_doc is just an ObjectId or document without _id

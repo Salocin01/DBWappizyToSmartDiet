@@ -1,4 +1,4 @@
-from .table_schemas import ColumnDefinition, BaseEntitySchema
+from .table_schemas import ColumnDefinition, BaseEntitySchema, TableSchema
 
 
 def _create_quizz_questions_strategy():
@@ -70,7 +70,6 @@ def _create_user_events_strategy():
             date_value = None
         
         return [
-            f"{parent_id}_{event_id}",  # Composite ID
             parent_id,
             event_id,  # event_id is the ObjectId of the event
             date_value,
@@ -83,7 +82,7 @@ def _create_user_events_strategy():
         child_collection='events',  # Events are stored in separate collection
         parent_filter_fields={'_id': 1, 'registered_events': 1},
         child_projection_fields={'_id': 1, 'date': 1},  # Only need _id and date
-        sql_columns=['id', 'user_id', 'event_id', 'created_at', 'updated_at'],
+        sql_columns=['user_id', 'event_id', 'created_at', 'updated_at'],
         value_transformer=user_events_transformer
     )
     
@@ -187,14 +186,21 @@ def create_schemas():
             import_strategy=_create_quizz_questions_strategy()
         ),
         
-        'user_events': BaseEntitySchema.create_with_base(
-            additional_columns=[
-                ColumnDefinition('user_id', 'VARCHAR', foreign_key='users(id)'),
-                ColumnDefinition('event_id', 'VARCHAR', foreign_key='events(id)')
+        'user_events': TableSchema.create(
+            columns=[
+                ColumnDefinition('user_id', 'VARCHAR', nullable=False, foreign_key='users(id)'),
+                ColumnDefinition('event_id', 'VARCHAR', nullable=False, foreign_key='events(id)'),
+                ColumnDefinition('created_at', 'TIMESTAMP', nullable=False),
+                ColumnDefinition('updated_at', 'TIMESTAMP', nullable=False)
             ],
             mongo_collection='users',
+            explicit_mappings={
+                'creation_date': 'created_at',
+                'update_date': 'updated_at'
+            },
             export_order=3,
-            import_strategy=_create_user_events_strategy()
+            import_strategy=_create_user_events_strategy(),
+            unique_constraints=[['user_id', 'event_id']]
         ),
         
         'user_quizzs': BaseEntitySchema.create_with_base(

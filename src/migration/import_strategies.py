@@ -139,7 +139,7 @@ class ImportUtils:
             cursor.close()
 
     @staticmethod
-    def write_sql_file(batch_values, columns, table_name, summary_instance, use_on_conflict=False):
+    def write_sql_file(batch_values, columns, table_name, summary_instance, use_on_conflict=False, on_conflict_clause=None):
         """Generate SQL file for batch values"""
         from .import_summary import ImportSummary
         import os
@@ -149,7 +149,10 @@ class ImportUtils:
             
         summary = summary_instance or ImportSummary()
         
-        on_conflict_clause = " ON CONFLICT (id) DO NOTHING" if use_on_conflict else ""
+        if on_conflict_clause:
+            conflict_clause = on_conflict_clause
+        else:
+            conflict_clause = " ON CONFLICT (id) DO NOTHING" if use_on_conflict else ""
         
         # Generate SQL file
         os.makedirs("sql_exports", exist_ok=True)
@@ -171,7 +174,7 @@ class ImportUtils:
                     else:
                         formatted_values.append(str(value))
                 
-                sql_statement = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({', '.join(formatted_values)}){on_conflict_clause};\n"
+                sql_statement = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({', '.join(formatted_values)}){conflict_clause};\n"
                 f.write(sql_statement)
         
         # Record as successful for tracking purposes
@@ -180,7 +183,7 @@ class ImportUtils:
         return len(batch_values)
     
     @staticmethod
-    def execute_direct_sql(conn, batch_values, columns, table_name, summary_instance, use_on_conflict=False):
+    def execute_direct_sql(conn, batch_values, columns, table_name, summary_instance, use_on_conflict=False, on_conflict_clause=None):
         """Execute SQL queries directly on the database"""
         from .import_summary import ImportSummary
         
@@ -190,8 +193,11 @@ class ImportUtils:
         summary = summary_instance or ImportSummary()
         
         placeholders = ', '.join(['%s'] * len(columns))
-        on_conflict_clause = " ON CONFLICT (id) DO NOTHING" if use_on_conflict else ""
-        sql_template = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders}){on_conflict_clause}"
+        if on_conflict_clause:
+            conflict_clause = on_conflict_clause
+        else:
+            conflict_clause = " ON CONFLICT (id) DO NOTHING" if use_on_conflict else ""
+        sql_template = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders}){conflict_clause}"
         
         cursor = conn.cursor()
         
@@ -264,16 +270,16 @@ class ImportUtils:
             cursor.close()
     
     @staticmethod
-    def execute_batch(conn, batch_values, columns, table_name, summary_instance, use_on_conflict=False):
+    def execute_batch(conn, batch_values, columns, table_name, summary_instance, use_on_conflict=False, on_conflict_clause=None):
         """Execute insert with error handling and progress tracking or generate SQL files"""
         if DIRECT_IMPORT:
             return ImportUtils.execute_direct_sql(
-                conn, batch_values, columns, table_name, summary_instance, use_on_conflict
+                conn, batch_values, columns, table_name, summary_instance, use_on_conflict, on_conflict_clause
             )
         else:
             # Generate SQL file (accumulate without executing)
             return ImportUtils.write_sql_file(
-                batch_values, columns, table_name, summary_instance, use_on_conflict
+                batch_values, columns, table_name, summary_instance, use_on_conflict, on_conflict_clause
             )
 
 
@@ -296,6 +302,23 @@ class ImportStrategy(ABC):
     def get_use_on_conflict(self) -> bool:
         """Override in subclasses if ON CONFLICT clause is needed"""
         return False
+    
+    def get_on_conflict_clause(self, table_name: str) -> str:
+        """Get the ON CONFLICT clause for the table. Override in subclasses if needed."""
+        if not self.get_use_on_conflict():
+            return ""
+        
+        # Try to get the table schema to determine the appropriate conflict clause
+        try:
+            from src.schemas.schemas import TABLE_SCHEMAS
+            schema = TABLE_SCHEMAS.get(table_name)
+            if schema:
+                return schema.get_on_conflict_clause()
+        except Exception:
+            pass
+        
+        # Fallback to default behavior
+        return " ON CONFLICT (id) DO NOTHING"
     
     def get_progress_message(self, processed: int, total: int, table_name: str, **kwargs) -> str:
         """Override in subclasses for custom progress messages"""
@@ -342,7 +365,8 @@ class ImportStrategy(ABC):
             if batch_values:
                 actual_insertions = ImportUtils.execute_batch(
                     conn, batch_values, columns, config.table_name, 
-                    config.summary_instance, use_on_conflict=self.get_use_on_conflict()
+                    config.summary_instance, use_on_conflict=self.get_use_on_conflict(),
+                    on_conflict_clause=self.get_on_conflict_clause(config.table_name)
                 )
                 total_records += actual_insertions
                 

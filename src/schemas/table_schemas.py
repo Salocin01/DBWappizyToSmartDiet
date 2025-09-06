@@ -17,11 +17,13 @@ class TableSchema:
     field_mappings: Dict[str, str]
     export_order: int = 0
     import_strategy: Optional[Any] = None
+    unique_constraints: Optional[List[List[str]]] = None
     
     @classmethod
     def create(cls, columns: List[ColumnDefinition], name: Optional[str] = None,
                mongo_collection: Optional[str] = None, explicit_mappings: Optional[Dict[str, str]] = None, 
-               export_order: int = 0, import_strategy: Optional[Any] = None) -> 'TableSchema':
+               export_order: int = 0, import_strategy: Optional[Any] = None, 
+               unique_constraints: Optional[List[List[str]]] = None) -> 'TableSchema':
         """Create a TableSchema with auto-generated field mappings.
         
         Args:
@@ -46,11 +48,12 @@ class TableSchema:
         if explicit_mappings:
             field_mappings.update(explicit_mappings)
             
-        return cls(name, mongo_collection, columns, field_mappings, export_order, import_strategy)
+        return cls(name, mongo_collection, columns, field_mappings, export_order, import_strategy, unique_constraints)
     
     def get_create_sql(self) -> str:
         column_defs = []
         foreign_keys = []
+        unique_constraints = []
         
         for col in self.columns:
             col_def = f"{col.name} {col.sql_type}"
@@ -63,12 +66,33 @@ class TableSchema:
             if col.foreign_key:
                 foreign_keys.append(f"FOREIGN KEY ({col.name}) REFERENCES {col.foreign_key}")
         
-        all_defs = column_defs + foreign_keys
+        if self.unique_constraints:
+            for constraint in self.unique_constraints:
+                constraint_cols = ', '.join(constraint)
+                unique_constraints.append(f"UNIQUE ({constraint_cols})")
+        
+        all_defs = column_defs + foreign_keys + unique_constraints
         return f"""
         CREATE TABLE IF NOT EXISTS {self.name} (
             {',\n            '.join(all_defs)}
         );
         """
+    
+    def get_on_conflict_clause(self) -> str:
+        """Get the appropriate ON CONFLICT clause for this table"""
+        # Check if table has an id column (primary key)
+        id_column = next((col for col in self.columns if col.name == 'id' and col.primary_key), None)
+        if id_column:
+            return " ON CONFLICT (id) DO NOTHING"
+        
+        # Check if table has unique constraints
+        if self.unique_constraints:
+            # Use the first unique constraint
+            constraint_cols = ', '.join(self.unique_constraints[0])
+            return f" ON CONFLICT ({constraint_cols}) DO NOTHING"
+        
+        # No appropriate conflict resolution found
+        return ""
 
 
 class BaseEntitySchema:

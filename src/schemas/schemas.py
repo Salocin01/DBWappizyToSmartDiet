@@ -290,6 +290,20 @@ def create_schemas():
             },
             mongo_collection='coachinglogbooks',
             export_order=4
+        ),
+        
+        'quizz_items': BaseEntitySchema.create_with_base(
+            additional_columns=[
+                ColumnDefinition('text', 'text', nullable=False),
+                ColumnDefinition('quizz_question_id', 'VARCHAR', foreign_key='quizz_questions(id)'),
+                ColumnDefinition('user_quizz_question_id', 'VARCHAR', foreign_key='user_quizz_questions(id)')
+            ],
+            additional_mappings={
+                'quizzQuestion': 'quizz_question_id',
+                'userQuizzQuestion': 'user_quizz_question_id'
+            },
+            mongo_collection='items',
+            export_order=4
         )
     }
     

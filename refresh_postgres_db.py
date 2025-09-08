@@ -309,6 +309,10 @@ class PostgresRefreshManager:
             
             self.log_progress("Creating optimized schema dump...")
             with open(dump_file, 'w') as f:
+                # Add clear schema section marker
+                f.write('-- ========================================\n')
+                f.write('-- SCHEMA SECTION - MUST BE IMPORTED FIRST\n')
+                f.write('-- ========================================\n\n')
                 result = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE, 
                                       text=True, env=env)
             
@@ -332,12 +336,19 @@ class PostgresRefreshManager:
             # Add data sampling if configured
             if self.data_sample_percentage < 100:
                 self.log_progress(f"Creating sampled data dump ({self.data_sample_percentage}%)...")
+                # Add clear data section marker before sampling
+                with open(dump_file, 'a') as f:
+                    f.write('\n\n-- ========================================\n')
+                    f.write('-- DATA SECTION - IMPORT AFTER SCHEMA\n')
+                    f.write('-- ========================================\n\n')
                 # For sampling, we'll need to create a custom query approach
                 self._create_sampled_data_dump(dump_file, env, data_filters)
             else:
                 self.log_progress("Creating full data dump...")
                 with open(dump_file, 'a') as f:
-                    f.write('\n\n-- Data dump\n')
+                    f.write('\n\n-- ========================================\n')
+                    f.write('-- DATA SECTION - IMPORT AFTER SCHEMA\n')
+                    f.write('-- ========================================\n\n')
                     result = subprocess.run(data_cmd, stdout=f, 
                                           stderr=subprocess.PIPE, text=True, env=env)
                 
@@ -384,16 +395,32 @@ class PostgresRefreshManager:
                 self.log_progress("✗ Failed to split SQL content")
                 return False
             
-            # Create split files
+            # Create split files with proper naming for import order
             self.split_files = []
+            self.file_metadata = []
+            
             for i, chunk in enumerate(chunks):
-                split_file = self.tmp_dir / f"{self.dump_file.stem}_part_{i+1:03d}.sql"
+                # Use metadata to create properly ordered filenames
+                metadata = self.chunk_metadata[i] if hasattr(self, 'chunk_metadata') and i < len(self.chunk_metadata) else {'type': 'unknown', 'priority': 1}
+                
+                # Schema files get lower numbers (imported first), data files get higher numbers
+                if metadata['type'] == 'schema':
+                    split_file = self.tmp_dir / f"{self.dump_file.stem}_1_schema_{i+1:03d}.sql"
+                else:
+                    split_file = self.tmp_dir / f"{self.dump_file.stem}_2_data_{i+1:03d}.sql"
+                
                 with open(split_file, 'w', encoding='utf-8') as f:
                     f.write(chunk)
                 
                 chunk_size_mb = len(chunk.encode('utf-8')) / (1024 * 1024)
                 self.split_files.append(split_file)
-                self.log_progress(f"  Created part {i+1}: {chunk_size_mb:.1f} MB")
+                self.file_metadata.append({
+                    'file': split_file,
+                    'type': metadata['type'],
+                    'priority': metadata['priority'],
+                    'size_mb': chunk_size_mb
+                })
+                self.log_progress(f"  Created {metadata['type']} part {i+1}: {chunk_size_mb:.1f} MB")
             
             # Remove original file
             self.dump_file.unlink()
@@ -405,19 +432,20 @@ class PostgresRefreshManager:
             return False
     
     def _split_sql_content(self, content, target_size):
-        """Split SQL content at proper statement boundaries"""
+        """Split SQL content at proper statement boundaries with schema prioritization"""
         chunks = []
         lines = content.split('\n')
-        current_chunk = []
-        current_size = 0
+        
+        # Separate schema and data sections
+        schema_lines = []
+        data_lines = []
+        current_section = []
+        is_in_data_section = False
         in_function = False
         in_copy = False
         function_depth = 0
         
         for line in lines:
-            line_with_newline = line + '\n'
-            line_size = len(line_with_newline.encode('utf-8'))
-            
             # Track function boundaries (PostgreSQL functions can have nested semicolons)
             if self._is_function_start(line):
                 in_function = True
@@ -430,37 +458,107 @@ class PostgresRefreshManager:
                 elif 'BEGIN' in line.upper():
                     function_depth += 1
             
-            # Track COPY statements
-            if line.strip().startswith('COPY ') or line.strip().startswith('\\copy '):
-                in_copy = True
-            elif in_copy and line.strip() == '\\.':
+            # Track COPY statements and data sections
+            stripped = line.strip()
+            
+            # Check for section markers
+            if '-- DATA SECTION - IMPORT AFTER SCHEMA' in line:
+                is_in_data_section = True
                 in_copy = False
+            elif '-- SCHEMA SECTION - MUST BE IMPORTED FIRST' in line:
+                is_in_data_section = False
+                in_copy = False
+            elif stripped.startswith('COPY ') or stripped.startswith('\\copy ') or stripped.startswith('INSERT INTO'):
+                in_copy = True
+                is_in_data_section = True
+            elif in_copy and stripped == '\\.':
+                in_copy = False
+            elif not in_copy and not is_in_data_section and self._is_schema_statement(line):
+                is_in_data_section = False
             
-            current_chunk.append(line_with_newline)
-            current_size += line_size
+            # Add line to appropriate section
+            if is_in_data_section or in_copy:
+                data_lines.append(line)
+            else:
+                schema_lines.append(line)
+        
+        # Create chunks with schema-first approach
+        def split_section(section_lines, section_name):
+            section_chunks = []
+            current_chunk = []
+            current_size = 0
+            in_func = False
+            in_copy_stmt = False
+            func_depth = 0
             
-            # Check if we should split here
-            should_split = (
-                current_size >= target_size and
-                not in_function and
-                not in_copy and
-                self._is_safe_split_point(line)
-            )
+            for line in section_lines:
+                line_with_newline = line + '\n'
+                line_size = len(line_with_newline.encode('utf-8'))
+                
+                # Track function boundaries again for splitting
+                if self._is_function_start(line):
+                    in_func = True
+                    func_depth = 1
+                elif in_func:
+                    if '$$' in line or 'END;' in line.upper() or 'END ' in line.upper():
+                        func_depth -= 1
+                        if func_depth <= 0:
+                            in_func = False
+                    elif 'BEGIN' in line.upper():
+                        func_depth += 1
+                
+                # Track COPY statements for splitting
+                if line.strip().startswith('COPY ') or line.strip().startswith('\\copy '):
+                    in_copy_stmt = True
+                elif in_copy_stmt and line.strip() == '\\.':
+                    in_copy_stmt = False
+                
+                current_chunk.append(line_with_newline)
+                current_size += line_size
+                
+                # Check if we should split here
+                should_split = (
+                    current_size >= target_size and
+                    not in_func and
+                    not in_copy_stmt and
+                    self._is_safe_split_point(line)
+                )
+                
+                if should_split:
+                    chunk_content = ''.join(current_chunk)
+                    if chunk_content.strip():
+                        section_chunks.append((section_name, chunk_content))
+                    current_chunk = []
+                    current_size = 0
             
-            if should_split:
+            # Add remaining content
+            if current_chunk:
                 chunk_content = ''.join(current_chunk)
-                if chunk_content.strip():  # Only add non-empty chunks
-                    chunks.append(chunk_content)
-                current_chunk = []
-                current_size = 0
+                if chunk_content.strip():
+                    section_chunks.append((section_name, chunk_content))
+            
+            return section_chunks
         
-        # Add remaining content
-        if current_chunk:
-            chunk_content = ''.join(current_chunk)
-            if chunk_content.strip():
-                chunks.append(chunk_content)
+        # Split schema and data sections separately
+        schema_chunks = split_section(schema_lines, 'schema')
+        data_chunks = split_section(data_lines, 'data')
         
-        return chunks
+        # Combine with schema chunks first, then data chunks
+        all_chunks = schema_chunks + data_chunks
+        
+        # Return just the content, but store the metadata for import ordering
+        result_chunks = []
+        self.chunk_metadata = []
+        
+        for i, (chunk_type, chunk_content) in enumerate(all_chunks):
+            result_chunks.append(chunk_content)
+            self.chunk_metadata.append({
+                'index': i,
+                'type': chunk_type,
+                'priority': 0 if chunk_type == 'schema' else 1
+            })
+        
+        return result_chunks
     
     def _is_function_start(self, line):
         """Check if line starts a PostgreSQL function/procedure"""
@@ -500,6 +598,53 @@ class PostgresRefreshManager:
         ]
         
         return any(stripped.upper().startswith(start) for start in safe_starts)
+    
+    def _is_schema_statement(self, line):
+        """Check if line is a schema definition statement"""
+        stripped = line.strip().upper()
+        schema_starts = [
+            'CREATE SCHEMA', 'CREATE TABLE', 'CREATE INDEX', 'CREATE UNIQUE INDEX',
+            'CREATE VIEW', 'CREATE MATERIALIZED VIEW', 'CREATE SEQUENCE', 
+            'CREATE FUNCTION', 'CREATE OR REPLACE FUNCTION', 'CREATE PROCEDURE',
+            'CREATE OR REPLACE PROCEDURE', 'CREATE TRIGGER', 'CREATE TYPE',
+            'ALTER TABLE', 'ALTER SCHEMA', 'ALTER SEQUENCE', 'COMMENT ON',
+            'GRANT ', 'REVOKE ', 'SET ', 'DROP '
+        ]
+        return any(stripped.startswith(start) for start in schema_starts)
+    
+    def _sort_files_for_import(self):
+        """Sort remote files to ensure proper import order (schema before data)"""
+        # If we have file metadata from splitting, use it to sort
+        if hasattr(self, 'file_metadata') and self.file_metadata:
+            # Create a mapping from filename to metadata
+            file_priority_map = {}
+            for metadata in self.file_metadata:
+                filename = metadata['file'].name + '.gz'  # Compressed version
+                file_priority_map[filename] = metadata['priority']
+            
+            # Sort remote files by priority, then by filename for consistency
+            sorted_files = sorted(self.remote_files, key=lambda x: (
+                file_priority_map.get(x.split('/')[-1], 999),  # Default high priority for unknown files
+                x  # Secondary sort by filename
+            ))
+            
+            self.log_progress(f"  → Import order: {len(sorted_files)} files sorted by schema priority")
+            for idx, file_path in enumerate(sorted_files):
+                filename = file_path.split('/')[-1]
+                priority = file_priority_map.get(filename, 'unknown')
+                file_type = 'schema' if priority == 0 else 'data' if priority == 1 else 'unknown'
+                self.log_progress(f"    {idx+1}. {filename} ({file_type})")
+            
+            return sorted_files
+        else:
+            # Fallback: use filename-based sorting (schema files should have "1_schema" in name)
+            sorted_files = sorted(self.remote_files, key=lambda x: (
+                0 if '_1_schema_' in x else 1 if '_2_data_' in x else 2,  # Schema first, then data, then others
+                x  # Secondary sort by filename
+            ))
+            
+            self.log_progress(f"  → Import order: {len(sorted_files)} files sorted by filename pattern")
+            return sorted_files
     
     def compress_dumps(self):
         self.log_progress("Starting parallel compression of dump files...")
@@ -770,8 +915,11 @@ class PostgresRefreshManager:
                 self.log_progress("  ✗ Aborting import due to connection failure")
                 return False
             
-            for i, remote_file in enumerate(self.remote_files, 1):
-                self.log_progress(f"[{i}/{len(self.remote_files)}] Processing {remote_file}...")
+            # Sort remote files to ensure schema files are imported before data files
+            sorted_remote_files = self._sort_files_for_import()
+            
+            for i, remote_file in enumerate(sorted_remote_files, 1):
+                self.log_progress(f"[{i}/{len(sorted_remote_files)}] Processing {remote_file}...")
                 
                 # Step 1: Verify file exists and test decompression
                 self.log_progress(f"  → Verifying file integrity...")

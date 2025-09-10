@@ -83,13 +83,35 @@ class TableSchema:
         # Check if table has an id column (primary key)
         id_column = next((col for col in self.columns if col.name == 'id' and col.primary_key), None)
         if id_column:
-            return " ON CONFLICT (id) DO NOTHING"
+            # Build UPDATE SET clause for all columns except id and primary keys
+            update_columns = []
+            for col in self.columns:
+                if not col.primary_key:
+                    update_columns.append(f"{col.name} = EXCLUDED.{col.name}")
+            
+            if update_columns:
+                update_clause = ', '.join(update_columns)
+                return f" ON CONFLICT (id) DO UPDATE SET {update_clause}"
+            else:
+                return " ON CONFLICT (id) DO NOTHING"
         
         # Check if table has unique constraints
         if self.unique_constraints:
             # Use the first unique constraint
             constraint_cols = ', '.join(self.unique_constraints[0])
-            return f" ON CONFLICT ({constraint_cols}) DO NOTHING"
+            
+            # Build UPDATE SET clause for all columns except those in unique constraint
+            update_columns = []
+            constraint_set = set(self.unique_constraints[0])
+            for col in self.columns:
+                if col.name not in constraint_set and not col.primary_key:
+                    update_columns.append(f"{col.name} = EXCLUDED.{col.name}")
+            
+            if update_columns:
+                update_clause = ', '.join(update_columns)
+                return f" ON CONFLICT ({constraint_cols}) DO UPDATE SET {update_clause}"
+            else:
+                return f" ON CONFLICT ({constraint_cols}) DO NOTHING"
         
         # No appropriate conflict resolution found
         return ""

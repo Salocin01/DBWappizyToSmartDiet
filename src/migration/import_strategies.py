@@ -29,9 +29,17 @@ class ImportUtils:
             return {}
         
         if hasattr(after_date, 'date'):  # It's already a datetime
-            return {'creation_date': {'$gte': after_date}}
+            date_filter = after_date
         else:  # It's a date, convert to datetime
-            return {'creation_date': {'$gte': datetime.combine(after_date, time.min)}}
+            date_filter = datetime.combine(after_date, time.min)
+        
+        # Filter for entries created OR updated after the specified date
+        return {
+            '$or': [
+                {'creation_date': {'$gte': date_filter}},
+                {'update_date': {'$gte': date_filter}}
+            ]
+        }
     
     @staticmethod
     def handle_batch_errors(conn, cursor, sql, batch_values, table_name, summary_instance):

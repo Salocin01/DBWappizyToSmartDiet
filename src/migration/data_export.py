@@ -8,12 +8,22 @@ from .import_summary import ImportSummary
 import_summary = ImportSummary()
 
 def get_last_insert_date(conn, table_name):
-    """Get the latest created_at date from a table to use as starting point for incremental imports"""
+    """Get the latest created_at or updated_at date from a table to use as starting point for incremental imports"""
     cursor = conn.cursor()
     try:
-        cursor.execute(f"SELECT MAX(created_at) FROM {table_name}")
+        # Get the maximum of both created_at and updated_at to catch both new and updated records
+        cursor.execute(f"""
+            SELECT GREATEST(
+                COALESCE(MAX(created_at), '1900-01-01'::timestamp), 
+                COALESCE(MAX(updated_at), '1900-01-01'::timestamp)
+            ) FROM {table_name}
+        """)
         result = cursor.fetchone()
-        return result[0] if result and result[0] else None
+        # Return None if the result is the default '1900-01-01' date
+        last_date = result[0] if result and result[0] else None
+        if last_date and str(last_date) == '1900-01-01 00:00:00':
+            return None
+        return last_date
     except psycopg2.Error as e:
         print(f"Error getting last insert date for {table_name}: {e}")
         return None

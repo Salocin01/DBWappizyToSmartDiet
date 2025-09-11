@@ -869,6 +869,44 @@ class PostgresRefreshManager:
             self.log_progress(f"  ⚠ Connection termination warning: {safe_error}")
             return True  # Don't fail the process for this
 
+    def drop_all_tables(self):
+        """Drop all tables in the target database before import"""
+        self.log_progress(f"Dropping all tables in database {self.remote_db}...")
+        try:
+            # Generate SQL to drop all tables
+            drop_tables_cmd = (f"export PGPASSWORD='{self.remote_db_password}' && "
+                             f"psql -h {self.remote_host} -p {self.remote_port} "
+                             f"-U {self.remote_db_user} -d {self.remote_db} "
+                             f"-t -c \"SELECT 'DROP TABLE IF EXISTS \\\"' || schemaname || '\\\".\\\"' || tablename || '\\\" CASCADE;' "
+                             f"FROM pg_tables WHERE schemaname NOT IN ('information_schema', 'pg_catalog') "
+                             f"ORDER BY schemaname, tablename;\" | "
+                             f"psql -h {self.remote_host} -p {self.remote_port} "
+                             f"-U {self.remote_db_user} -d {self.remote_db}")
+            
+            self.log_progress(f"  → Executing table drop commands...")
+            
+            _, stdout, stderr = self.ssh.exec_command(drop_tables_cmd)
+            exit_status = stdout.channel.recv_exit_status()
+            
+            if exit_status == 0:
+                stdout_content = stdout.read().decode().strip()
+                self.log_progress(f"  ✓ All tables dropped successfully")
+                if stdout_content and "DROP TABLE" in stdout_content:
+                    # Count the number of tables dropped
+                    dropped_count = stdout_content.count("DROP TABLE")
+                    self.log_progress(f"  → {dropped_count} tables were dropped")
+                return True
+            else:
+                error_msg = stderr.read().decode().strip()
+                safe_error = error_msg.replace(self.remote_db_password, '[PROTECTED]') if self.remote_db_password else error_msg
+                self.log_progress(f"  ✗ Failed to drop tables: {safe_error}")
+                return False
+                
+        except Exception as e:
+            safe_error = str(e).replace(self.remote_db_password, '[PROTECTED]') if self.remote_db_password else str(e)
+            self.log_progress(f"  ✗ Table drop error: {safe_error}")
+            return False
+
     def test_remote_db_connection(self):
         """Test connection to remote PostgreSQL database before importing"""
         self.log_progress(f"Testing connection to remote database {self.remote_host}:{self.remote_port}/{self.remote_db}...")
@@ -913,6 +951,11 @@ class PostgresRefreshManager:
             # Test database connection first
             if not self.test_remote_db_connection():
                 self.log_progress("  ✗ Aborting import due to connection failure")
+                return False
+            
+            # Drop all existing tables before import
+            if not self.drop_all_tables():
+                self.log_progress("  ✗ Aborting import due to table drop failure")
                 return False
             
             # Sort remote files to ensure schema files are imported before data files

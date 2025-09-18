@@ -451,6 +451,10 @@ class DirectTranslationStrategy(ImportStrategy):
         
         return values, columns
     
+    def get_use_on_conflict(self) -> bool:
+        """Use ON CONFLICT for tables with primary keys or unique constraints"""
+        return True
+    
     def get_progress_message(self, processed: int, total: int, table_name: str, **kwargs) -> str:
         tried = kwargs.get('tried', 0)
         inserted = kwargs.get('inserted', 0)

@@ -3,11 +3,18 @@ from bson import ObjectId
 import psycopg2
 from src.connections.mongo_connection import get_mongo_collection
 from .import_summary import ImportSummary
+from datetime import datetime
 
 # Global instance for backward compatibility
 import_summary = ImportSummary()
 
 def get_last_insert_date(conn, table_name):
+
+    #datetime_str = str('28/08/25 00:00:00')
+    #datetime_object = datetime.strptime(datetime_str, '%d/%m/%y %H:%M:%S')
+
+    #return datetime_object
+
     """Get the latest created_at or updated_at date from a table to use as starting point for incremental imports"""
     cursor = conn.cursor()
     try:

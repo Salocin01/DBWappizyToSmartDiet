@@ -3,7 +3,7 @@
 import os
 import shutil
 import subprocess
-import zipfile
+import tarfile
 from datetime import datetime
 from pathlib import Path
 import paramiko
@@ -16,12 +16,19 @@ class MongoRefreshManager:
         self.remote_url = os.getenv('REMOTE_SERVER_URL')
         self.remote_user = os.getenv('REMOTE_SERVER_USER')
         self.remote_password = os.getenv('REMOTE_SERVER_PASSWORD')
-        self.remote_path = os.getenv('REMOTE_MONGODB_PATH')
+        self.remote_path = os.getenv('REMOTE_MONGODB_PATH', '/tmp')
+        self.remote_mongo_url = os.getenv('REMOTE_MONGODB_URL')
+        self.remote_mongo_db = os.getenv('REMOTE_MONGODB_DATABASE')
         self.mongo_url = os.getenv('MONGODB_URL')
         self.mongo_db = os.getenv('MONGODB_DATABASE')
         self.tmp_dir = Path('./tmp')
         
-        if not all([self.remote_url, self.remote_user, self.remote_path, self.mongo_url, self.mongo_db]):
+        # Generate unique dump filename
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        self.dump_filename = f"mongo_dump_{timestamp}.tar.gz"
+        self.remote_dump_path = f"{self.remote_path}/{self.dump_filename}"
+        
+        if not all([self.remote_url, self.remote_user, self.remote_mongo_url, self.remote_mongo_db, self.mongo_url, self.mongo_db]):
             raise ValueError("Missing required environment variables")
     
     def log_progress(self, message):
@@ -48,29 +55,51 @@ class MongoRefreshManager:
             self.log_progress(f"✗ Failed to connect: {e}")
             return False
     
-    def find_latest_backup(self):
-        self.log_progress(f"Searching for latest backup in {self.remote_path}...")
+    def create_remote_dump(self):
+        self.log_progress(f"Creating MongoDB dump on remote server...")
         try:
-            files = self.sftp.listdir_attr(self.remote_path)
-            zip_bak_files = [f for f in files if f.filename.endswith('.zip.bak')]
+            # Create mongodump command
+            dump_dir = f"{self.remote_path}/dump_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            mongodump_cmd = f"mongodump --uri='{self.remote_mongo_url}' --db={self.remote_mongo_db} --out={dump_dir}"
             
-            if not zip_bak_files:
-                raise FileNotFoundError("No .zip.bak files found")
+            # Execute mongodump on remote server
+            stdin, stdout, stderr = self.ssh.exec_command(mongodump_cmd)
+            exit_status = stdout.channel.recv_exit_status()
             
-            latest_file = max(zip_bak_files, key=lambda x: x.st_mtime)
-            self.latest_backup = latest_file.filename
-            self.remote_file_path = f"{self.remote_path}/{self.latest_backup}"
-            self.log_progress(f"✓ Found latest backup: {self.latest_backup}")
+            if exit_status != 0:
+                error_msg = stderr.read().decode()
+                self.log_progress(f"✗ Mongodump failed: {error_msg}")
+                return False
+            
+            self.log_progress("✓ MongoDB dump created successfully")
+            
+            # Create tar.gz archive of the dump
+            tar_cmd = f"cd {self.remote_path} && tar -czf {self.dump_filename} {os.path.basename(dump_dir)}"
+            stdin, stdout, stderr = self.ssh.exec_command(tar_cmd)
+            exit_status = stdout.channel.recv_exit_status()
+            
+            if exit_status != 0:
+                error_msg = stderr.read().decode()
+                self.log_progress(f"✗ Tar creation failed: {error_msg}")
+                return False
+            
+            self.log_progress("✓ Dump archived successfully")
+            
+            # Clean up the uncompressed dump directory
+            cleanup_cmd = f"rm -rf {dump_dir}"
+            self.ssh.exec_command(cleanup_cmd)
+            
+            self.dump_dir = dump_dir
             return True
         except Exception as e:
-            self.log_progress(f"✗ Failed to find backup: {e}")
+            self.log_progress(f"✗ Failed to create dump: {e}")
             return False
     
     def download_backup(self):
-        local_file = self.tmp_dir / self.latest_backup
-        self.log_progress(f"Downloading {self.latest_backup}...")
+        local_file = self.tmp_dir / self.dump_filename
+        self.log_progress(f"Downloading {self.dump_filename}...")
         try:
-            self.sftp.get(self.remote_file_path, str(local_file))
+            self.sftp.get(self.remote_dump_path, str(local_file))
             self.local_backup_path = local_file
             self.log_progress(f"✓ Downloaded to {local_file}")
             return True
@@ -81,8 +110,8 @@ class MongoRefreshManager:
     def extract_backup(self):
         self.log_progress("Extracting backup archive...")
         try:
-            with zipfile.ZipFile(self.local_backup_path, 'r') as zip_ref:
-                zip_ref.extractall(self.tmp_dir)
+            with tarfile.open(self.local_backup_path, 'r:gz') as tar_ref:
+                tar_ref.extractall(self.tmp_dir)
             self.log_progress("✓ Backup extracted successfully")
             return True
         except Exception as e:
@@ -136,6 +165,22 @@ class MongoRefreshManager:
             self.log_progress(f"✗ Restore error: {e}")
             return False
     
+    def cleanup_remote_dump(self):
+        self.log_progress("Cleaning up remote dump file...")
+        try:
+            # Remove the zip file from remote server
+            cleanup_cmd = f"rm -f {self.remote_dump_path}"
+            stdin, stdout, stderr = self.ssh.exec_command(cleanup_cmd)
+            exit_status = stdout.channel.recv_exit_status()
+            
+            if exit_status == 0:
+                self.log_progress("✓ Remote dump file cleaned up")
+            else:
+                error_msg = stderr.read().decode()
+                self.log_progress(f"⚠ Remote cleanup warning: {error_msg}")
+        except Exception as e:
+            self.log_progress(f"⚠ Remote cleanup warning: {e}")
+    
     def cleanup(self):
         self.log_progress("Cleaning up temporary files...")
         try:
@@ -160,7 +205,7 @@ class MongoRefreshManager:
             if not self.connect_to_server():
                 return False
             
-            if not self.find_latest_backup():
+            if not self.create_remote_dump():
                 return False
             
             if not self.download_backup():
@@ -174,6 +219,9 @@ class MongoRefreshManager:
             
             if not self.restore_database():
                 return False
+            
+            # Clean up the remote dump file
+            self.cleanup_remote_dump()
             
             self.log_progress("🎉 Database refresh completed successfully!")
             self.cleanup()

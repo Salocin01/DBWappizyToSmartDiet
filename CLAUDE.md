@@ -5,18 +5,22 @@ This project is a Python-based database migration tool that transfers data from 
 ## Project Structure
 
 ```
-src/
-├── connections/
-│   ├── mongo_connection.py    # MongoDB connection singleton
-│   └── postgres_connection.py # PostgreSQL connection setup
-├── migration/
-│   ├── data_export.py         # Core data export logic
-│   ├── import_strategies.py   # Custom import strategies
-│   └── import_summary.py      # Migration reporting
-├── schemas/
-│   ├── schemas.py            # Table definitions and mappings
-│   └── table_schemas.py      # Base schema classes
-└── utils/
+├── config/                    # Configuration files
+├── logs/                      # Application logs
+├── sql_exports/               # SQL export files
+├── src/
+│   ├── connections/
+│   │   ├── mongo_connection.py    # MongoDB connection singleton
+│   │   └── postgres_connection.py # PostgreSQL connection setup
+│   ├── migration/
+│   │   ├── data_export.py         # Core data export logic
+│   │   ├── import_strategies.py   # Custom import strategies
+│   │   └── import_summary.py      # Migration reporting
+│   ├── schemas/
+│   │   ├── schemas.py            # Table definitions and mappings
+│   │   └── table_schemas.py      # Base schema classes
+│   └── utils/                    # Utility modules
+└── tests/                     # Test files
 ```
 
 ## Key Components
@@ -29,16 +33,186 @@ src/
 
 ### Database Schema
 The project migrates the following entities (in order):
-1. **Base entities**: ingredients, appointment_types, companies, offers, categories, targets
-2. **Users & Events**: events, users, quizzs
-3. **Relationships**: quizz_questions, user_events, user_quizzs, messages, coachings
-4. **Complex data**: user_quizz_questions, appointments, coachings_logbooks, quizz_items
+1. **Base entities**: ingredients, appointment_types, companies, offers, categories, targets, recipes
+2. **Users & Events**: events, users, menus
+3. **Relationships**: user_events, users_targets, messages, coachings, menu_recipes
+4. **Complex data**: appointments
 
 ### Special Features
 - **Array Extraction**: Handles MongoDB arrays as separate PostgreSQL tables
-- **Incremental Migration**: Only imports records created after the last migration
+- **Incremental Migration**: Only imports records created or updated after the last migration
+- **Upsert Strategy**: Automatically updates existing records instead of skipping them
 - **Foreign Key Management**: Maintains referential integrity during migration
 - **Custom Strategies**: Specialized import logic for complex data structures
+- **Multi-Array Consolidation**: Combines multiple MongoDB arrays into single PostgreSQL tables with type discrimination (e.g., users_targets)
+
+## Database Transformation Process
+
+### Core Transformation
+The system performs a complete structural transformation from MongoDB's document-based format to PostgreSQL's relational format:
+
+- **MongoDB collections** → **PostgreSQL tables** with defined schemas
+- **Document fields** → **Typed columns** (VARCHAR, INTEGER, TIMESTAMP, etc.)
+- **ObjectId references** → **Foreign key relationships**
+- **Nested documents** → **Normalized separate tables**
+
+### Data Type Conversions
+- `ObjectId` → `VARCHAR` (string representation)
+- MongoDB dates → PostgreSQL `TIMESTAMP`/`DATE`
+- Embedded documents → Foreign key references
+- Arrays → Separate junction/relationship tables
+
+### Migration Strategies
+
+#### DirectTranslationStrategy
+Simple 1:1 mapping for basic entities:
+- Collections like `users`, `companies`, `ingredients`
+- Direct field mapping with type conversion
+- Handles missing fields as NULL values
+- Uses `ON CONFLICT DO UPDATE` for automatic upserts
+
+#### ArrayExtractionStrategy
+Complex array normalization:
+- `users.registered_events[]` → `user_events` table
+- Uses `ON CONFLICT DO UPDATE` on unique constraints
+- Updates timestamps when relationships already exist
+
+#### CustomUsersTargetsStrategy
+Multi-array extraction with type categorization:
+- `users.targets[]` → `users_targets` table (type='basic')
+- `users.specificity_targets[]` → `users_targets` table (type='specificity')
+- `users.health_targets[]` → `users_targets` table (type='health')
+- Uses incremental delete-and-insert pattern for changed users
+- Unique constraint on (user_id, target_id, type)
+
+### Incremental Migration & Update Strategy
+
+The migration system supports incremental synchronization to efficiently handle large datasets and ongoing updates.
+
+#### Date Filtering
+
+The system uses `$gte` (greater than or equal to) comparison for incremental imports:
+
+```python
+# MongoDB query filter
+{
+    '$or': [
+        {'creation_date': {'$gte': after_date}},
+        {'update_date': {'$gte': after_date}}
+    ]
+}
+```
+
+- **Last migration timestamp**: Retrieved from PostgreSQL using `MAX(GREATEST(created_at, updated_at))`
+- **Inclusive comparison**: Records created or updated exactly at the last migration timestamp are included
+- **Rationale**: Ensures no records are missed even if created during migration execution
+
+#### Upsert Behavior (ON CONFLICT DO UPDATE)
+
+All import strategies use PostgreSQL's `ON CONFLICT` clause to handle duplicate records:
+
+##### Tables with Primary Key (`id`)
+```sql
+INSERT INTO users (id, created_at, updated_at, firstname, lastname, email, ...)
+VALUES (...)
+ON CONFLICT (id) DO UPDATE SET
+  created_at = EXCLUDED.created_at,
+  updated_at = EXCLUDED.updated_at,
+  firstname = EXCLUDED.firstname,
+  lastname = EXCLUDED.lastname,
+  email = EXCLUDED.email,
+  ...
+```
+
+##### Tables with Unique Constraints
+```sql
+INSERT INTO user_events (user_id, event_id, created_at, updated_at)
+VALUES (...)
+ON CONFLICT (user_id, event_id) DO UPDATE SET
+  created_at = EXCLUDED.created_at,
+  updated_at = EXCLUDED.updated_at
+```
+
+#### Update Handling Examples
+
+**Scenario 1: New Record**
+- MongoDB: Record created after last migration
+- PostgreSQL: Inserted normally
+- Result: New record in PostgreSQL ✓
+
+**Scenario 2: Updated Record**
+- MongoDB: Record exists but was updated after last migration
+- PostgreSQL: Record exists with older data
+- Result: PostgreSQL record updated with latest data ✓
+
+**Scenario 3: Unchanged Record**
+- MongoDB: Record hasn't changed since last migration
+- PostgreSQL: Record exists
+- Result: Not fetched from MongoDB (filtered out by date query) ✓
+
+**Scenario 4: Relationship Changes (users_targets)**
+- MongoDB: User's target arrays modified
+- PostgreSQL: Uses delete-and-insert pattern
+- Result: All relationships for that user refreshed ✓
+
+#### Strategy-Specific Behavior
+
+| Strategy | Conflict Resolution | Update Handling |
+|----------|-------------------|-----------------|
+| DirectTranslationStrategy | `ON CONFLICT (id) DO UPDATE` | All columns updated except primary key |
+| ArrayExtractionStrategy | `ON CONFLICT (unique_constraint) DO UPDATE` | Timestamps updated |
+| CustomUsersTargetsStrategy | Delete + Insert (no conflict clause) | Full relationship refresh per user |
+
+### Users Targets Feature
+
+The `users_targets` table represents a many-to-many relationship between users and their health/wellness targets. Unlike simple array extraction, this feature consolidates three different MongoDB arrays into a single normalized table.
+
+#### MongoDB Structure
+In MongoDB, users have three separate arrays for different target categories:
+```javascript
+{
+  _id: ObjectId("..."),
+  targets: [ObjectId("target1"), ObjectId("target2")],           // Basic targets
+  specificity_targets: [ObjectId("target3")],                    // Specificity targets
+  health_targets: [ObjectId("target4"), ObjectId("target5")]     // Health targets
+}
+```
+
+#### PostgreSQL Structure
+```sql
+CREATE TABLE users_targets (
+  user_id VARCHAR NOT NULL REFERENCES users(id),
+  target_id VARCHAR NOT NULL REFERENCES targets(id),
+  type VARCHAR(50) NOT NULL,  -- 'basic', 'specificity', or 'health'
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  UNIQUE(user_id, target_id, type)
+);
+```
+
+#### Incremental Sync Behavior
+For efficiency, the users_targets migration uses a delete-and-insert pattern:
+1. **Query**: Find users with any target changes after `after_date`
+2. **Delete**: Remove ALL existing relationships for changed users
+3. **Insert**: Insert fresh relationships from all three arrays
+4. **Benefit**: Handles target additions, removals, and type changes correctly
+
+This approach ensures data consistency without complex diff logic while maintaining good performance through batch processing.
+
+### Export Order & Dependencies
+Migration follows strict dependency order:
+
+1. **Order 1**: Base entities (no dependencies)
+   - `ingredients`, `appointment_types`, `companies`, `offers`, `categories`, `targets`, `recipes`
+
+2. **Order 2**: Core entities with simple foreign keys
+   - `events`, `users`, `menus`
+
+3. **Order 3**: Relationship tables and arrays
+   - `user_events`, `users_targets`, `messages`, `coachings`, `menu_recipes`
+
+4. **Order 4**: Complex dependent data
+   - `appointments`
 
 ## Dependencies
 

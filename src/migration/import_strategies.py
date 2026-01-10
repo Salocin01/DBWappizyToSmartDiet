@@ -197,6 +197,11 @@ class ImportUtils:
         
         if not batch_values or not columns:
             return 0
+        
+        # Filter out any empty lists from batch_values
+        batch_values = [values for values in batch_values if values and len(values) > 0]
+        if not batch_values:
+            return 0
             
         summary = summary_instance or ImportSummary()
         
@@ -206,6 +211,7 @@ class ImportUtils:
         else:
             conflict_clause = " ON CONFLICT (id) DO NOTHING" if use_on_conflict else ""
         sql_template = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders}){conflict_clause}"
+        
         
         cursor = conn.cursor()
         
@@ -311,21 +317,28 @@ class ImportStrategy(ABC):
         """Override in subclasses if ON CONFLICT clause is needed"""
         return False
     
-    def get_on_conflict_clause(self, table_name: str) -> str:
+    def get_on_conflict_clause(self, table_name: str, columns: list = None) -> str:
         """Get the ON CONFLICT clause for the table. Override in subclasses if needed."""
         if not self.get_use_on_conflict():
             return ""
-        
+
         # Try to get the table schema to determine the appropriate conflict clause
         try:
             from src.schemas.schemas import TABLE_SCHEMAS
             schema = TABLE_SCHEMAS.get(table_name)
             if schema:
-                return schema.get_on_conflict_clause()
+                return schema.get_on_conflict_clause(columns)
         except Exception:
             pass
-        
-        # Fallback to default behavior
+
+        # Fallback to default behavior with UPDATE
+        if columns:
+            # Build UPDATE SET clause for all columns except the conflict target
+            update_columns = [col for col in columns if col != 'id']
+            if update_columns:
+                set_clause = ', '.join([f"{col} = EXCLUDED.{col}" for col in update_columns])
+                return f" ON CONFLICT (id) DO UPDATE SET {set_clause}"
+
         return " ON CONFLICT (id) DO NOTHING"
     
     def get_progress_message(self, processed: int, total: int, table_name: str, **kwargs) -> str:
@@ -372,9 +385,9 @@ class ImportStrategy(ABC):
             
             if batch_values:
                 actual_insertions = ImportUtils.execute_batch(
-                    conn, batch_values, columns, config.table_name, 
+                    conn, batch_values, columns, config.table_name,
                     config.summary_instance, use_on_conflict=self.get_use_on_conflict(),
-                    on_conflict_clause=self.get_on_conflict_clause(config.table_name)
+                    on_conflict_clause=self.get_on_conflict_clause(config.table_name, columns)
                 )
                 total_records += actual_insertions
                 

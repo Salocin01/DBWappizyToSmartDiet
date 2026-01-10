@@ -1,57 +1,6 @@
 from .table_schemas import ColumnDefinition, BaseEntitySchema, TableSchema
 
 
-def _create_quizz_questions_strategy():
-    """Create strategy for quizz_questions array extraction"""
-    from src.migration.import_strategies import ArrayExtractionStrategy, ArrayExtractionConfig
-    
-    def quizz_questions_transformer(parent_id, child_doc):
-        return [
-            str(child_doc['_id']),
-            parent_id,
-            child_doc.get('title', ''),
-            child_doc.get('type', None),
-            child_doc.get('creation_date', None),
-            child_doc.get('update_date', None)
-        ]
-    
-    config = ArrayExtractionConfig(
-        parent_collection='quizzs',
-        array_field='questions',
-        child_collection='quizzquestions',
-        parent_filter_fields={'_id': 1, 'questions': 1},
-        child_projection_fields={'_id': 1, 'title': 1, 'type': 1, 'creation_date': 1, 'update_date': 1},
-        sql_columns=['id', 'quizz_id', 'title', 'type', 'created_at', 'updated_at'],
-        value_transformer=quizz_questions_transformer
-    )
-    
-    return ArrayExtractionStrategy(config)
-
-
-def _create_user_quizz_questions_strategy():
-    """Create strategy for user_quizz_questions array extraction"""
-    from src.migration.import_strategies import ArrayExtractionStrategy, ArrayExtractionConfig
-    
-    def user_quizz_questions_transformer(parent_id, child_doc):
-        return [
-            str(child_doc['_id']),
-            parent_id,
-            str(child_doc['quizz_question']) if child_doc.get('quizz_question') else None,
-            child_doc.get('creation_date', None),
-            child_doc.get('update_date', None)
-        ]
-    
-    config = ArrayExtractionConfig(
-        parent_collection='userquizzs',
-        array_field='questions',
-        child_collection='userquizzquestions',
-        parent_filter_fields={'_id': 1, 'questions': 1},
-        child_projection_fields={'_id': 1, 'quizz_question': 1, 'creation_date': 1, 'update_date': 1},
-        sql_columns=['id', 'user_quizz_id', 'quizz_question_id', 'created_at', 'updated_at'],
-        value_transformer=user_quizz_questions_transformer
-    )
-    
-    return ArrayExtractionStrategy(config)
 
 
 def _create_user_events_strategy():
@@ -87,6 +36,184 @@ def _create_user_events_strategy():
     )
     
     return ArrayExtractionStrategy(config)
+
+
+def _create_users_targets_strategy():
+    """Create strategy for users_targets array extraction from multiple target fields"""
+    from src.migration.import_strategies import ImportStrategy, ImportConfig, ImportUtils
+    from src.connections.mongo_connection import get_mongo_collection
+    from datetime import datetime
+    
+    class UsersTargetsStrategy(ImportStrategy):
+        def count_total_documents(self, collection, config: ImportConfig) -> int:
+            """Count users that have any target arrays"""
+            mongo_filter = {'$or': [
+                {'targets': {'$exists': True, '$ne': []}},
+                {'specificity_targets': {'$exists': True, '$ne': []}},
+                {'health_targets': {'$exists': True, '$ne': []}}
+            ]}
+            mongo_filter.update(ImportUtils.build_date_filter(config.after_date))
+            return collection.count_documents(mongo_filter)
+        
+        def get_documents(self, collection, config: ImportConfig, offset: int = 0):
+            """Get user documents with target arrays"""
+            mongo_filter = {'$or': [
+                {'targets': {'$exists': True, '$ne': []}},
+                {'specificity_targets': {'$exists': True, '$ne': []}},
+                {'health_targets': {'$exists': True, '$ne': []}}
+            ]}
+            mongo_filter.update(ImportUtils.build_date_filter(config.after_date))
+            
+            return list(collection.find(
+                mongo_filter,
+                {'_id': 1, 'targets': 1, 'specificity_targets': 1, 'health_targets': 1, 'creation_date': 1, 'update_date': 1}
+            ).skip(offset).limit(config.batch_size))
+        
+        def extract_data_for_sql(self, document, config: ImportConfig):
+            """Extract all target relationships from a user document"""
+            user_id = str(document['_id'])
+            creation_date = document.get('creation_date')
+            update_date = document.get('update_date')
+            
+            batch_values = []
+            
+            # Extract basic targets
+            for target_id in document.get('targets', []):
+                batch_values.append([
+                    user_id,
+                    str(target_id),
+                    'basic',
+                    creation_date,
+                    update_date
+                ])
+            
+            # Extract specificity targets
+            for target_id in document.get('specificity_targets', []):
+                batch_values.append([
+                    user_id,
+                    str(target_id),
+                    'specificity',
+                    creation_date,
+                    update_date
+                ])
+            
+            # Extract health targets
+            for target_id in document.get('health_targets', []):
+                batch_values.append([
+                    user_id,
+                    str(target_id),
+                    'health',
+                    creation_date,
+                    update_date
+                ])
+            
+            return batch_values, ['user_id', 'target_id', 'type', 'created_at', 'updated_at']
+        
+        def get_use_on_conflict(self) -> bool:
+            return True
+        
+        def get_progress_message(self, processed: int, total: int, table_name: str, **kwargs) -> str:
+            total_records = kwargs.get('total_records', 0)
+            return f"Processed {processed}/{total} users, {total_records} user-target relationships"
+        
+        def export_data(self, conn, collection, config: ImportConfig):
+            """Incremental sync: only process changed users, delete their old relationships and insert fresh ones"""
+            from src.migration.import_strategies import DIRECT_IMPORT, ImportUtils
+            import os
+            
+            print("Starting incremental users_targets sync...")
+            
+            # Ensure SQL exports directory exists
+            if not DIRECT_IMPORT:
+                os.makedirs("sql_exports", exist_ok=True)
+            
+            # Get total count for progress tracking
+            total_docs = self.count_total_documents(collection, config)
+            processed_docs = 0
+            total_records = 0
+            
+            # Process documents in batches
+            offset = 0
+            while True:
+                documents = self.get_documents(collection, config, offset)
+                
+                if not documents:
+                    break
+                
+                batch_values = []
+                columns = None
+                batch_user_ids = []
+                
+                for doc in documents:
+                    values, doc_columns = self.extract_data_for_sql(doc, config)
+                    if values is not None:
+                        if columns is None:
+                            columns = doc_columns
+                        
+                        user_id = str(doc['_id'])
+                        batch_user_ids.append(user_id)
+                        
+                        # Handle both single records and multiple records per document
+                        if isinstance(values, list) and len(values) > 0 and isinstance(values[0], list):
+                            batch_values.extend(values)
+                        else:
+                            batch_values.append(values)
+                
+                # Delete existing relationships for these specific users
+                if batch_user_ids and DIRECT_IMPORT:
+                    cursor = conn.cursor()
+                    try:
+                        placeholders = ', '.join(['%s'] * len(batch_user_ids))
+                        delete_sql = f"DELETE FROM users_targets WHERE user_id IN ({placeholders})"
+                        cursor.execute(delete_sql, batch_user_ids)
+                        deleted_count = cursor.rowcount
+                        conn.commit()
+                        print(f"Deleted {deleted_count} existing relationships for {len(batch_user_ids)} updated users")
+                    except Exception as e:
+                        print(f"Error deleting existing relationships: {e}")
+                        conn.rollback()
+                    finally:
+                        cursor.close()
+                
+                # Insert fresh relationships
+                if batch_values:
+                    actual_insertions = ImportUtils.execute_batch(
+                        conn, batch_values, columns, config.table_name, 
+                        config.summary_instance, use_on_conflict=False,
+                        on_conflict_clause=""
+                    )
+                    total_records += actual_insertions
+                    
+                    if DIRECT_IMPORT:
+                        print(f"Inserted {actual_insertions} fresh relationships for {len(batch_user_ids)} users")
+                        print(self.get_progress_message(
+                            processed_docs + len(documents), total_docs, config.table_name,
+                            total_records=total_records
+                        ))
+                    else:
+                        print(f"Generated SQL for {total_records} records from {processed_docs + len(documents)}/{total_docs} documents for {config.table_name}")
+                
+                processed_docs += len(documents)
+                offset += config.batch_size
+                
+                if len(documents) < config.batch_size:
+                    break
+            
+            action = "processing" if DIRECT_IMPORT else "SQL generation for"
+            print(f"Completed incremental {action} {total_records} records from {processed_docs} documents for {config.table_name}")
+            
+            if not DIRECT_IMPORT:
+                # Execute the accumulated SQL file
+                sql_file_path = f"sql_exports/{config.table_name}_import.sql"
+                if os.path.exists(sql_file_path):
+                    executed_count = ImportUtils.execute_sql_file(conn, sql_file_path, config.summary_instance)
+                    os.remove(sql_file_path)
+                    print(f"Executed and deleted SQL file: {sql_file_path} ({executed_count} statements)")
+                    return executed_count
+            
+            return total_records
+    
+    return UsersTargetsStrategy()
 
 
 def create_schemas():
@@ -167,24 +294,6 @@ def create_schemas():
             export_order=2
         ),
         
-        'quizzs': BaseEntitySchema.create_with_base(
-            additional_columns=[
-                ColumnDefinition('name', 'VARCHAR(255)', nullable=False),
-                ColumnDefinition('type', 'VARCHAR(255)', nullable=False),
-            ],
-            export_order=2
-        ),
-        
-        'quizz_questions': BaseEntitySchema.create_with_base(
-            additional_columns=[
-                ColumnDefinition('quizz_id', 'VARCHAR', foreign_key='quizzs(id)'),
-                ColumnDefinition('title', 'VARCHAR', nullable=False),
-                ColumnDefinition('type', 'VARCHAR(100)'),
-            ],
-            mongo_collection='quizzquestions',
-            export_order=3,
-            import_strategy=_create_quizz_questions_strategy()
-        ),
         
         'user_events': TableSchema.create(
             columns=[
@@ -203,18 +312,24 @@ def create_schemas():
             unique_constraints=[['user_id', 'event_id']]
         ),
         
-        'user_quizzs': BaseEntitySchema.create_with_base(
-            additional_columns=[
-                ColumnDefinition('quizz_id', 'VARCHAR', foreign_key='quizzs(id)'),
-                ColumnDefinition('name', 'VARCHAR', nullable=False),
-                ColumnDefinition('type', 'VARCHAR(100)'),
+        'users_targets': TableSchema.create(
+            columns=[
+                ColumnDefinition('user_id', 'VARCHAR', nullable=False, foreign_key='users(id)'),
+                ColumnDefinition('target_id', 'VARCHAR', nullable=False, foreign_key='targets(id)'),
+                ColumnDefinition('type', 'VARCHAR(50)', nullable=False),
+                ColumnDefinition('created_at', 'TIMESTAMP', nullable=False),
+                ColumnDefinition('updated_at', 'TIMESTAMP', nullable=False)
             ],
-            additional_mappings={
-                'quizz': 'quizz_id'
+            mongo_collection='users',
+            explicit_mappings={
+                'creation_date': 'created_at',
+                'update_date': 'updated_at'
             },
-            mongo_collection='userquizzs',
-            export_order=3
+            export_order=3,
+            import_strategy=_create_users_targets_strategy(),
+            unique_constraints=[['user_id', 'target_id', 'type']]
         ),
+        
         
         'messages': BaseEntitySchema.create_with_base(
             additional_columns=[
@@ -244,18 +359,6 @@ def create_schemas():
             export_order=3
         ),
         
-        'user_quizz_questions': BaseEntitySchema.create_with_base(
-            additional_columns=[
-                ColumnDefinition('user_quizz_id', 'VARCHAR', foreign_key='user_quizzs(id)'),
-                ColumnDefinition('quizz_question_id', 'VARCHAR', foreign_key='quizz_questions(id)'),
-            ],
-            mongo_collection='userquizzquestions',
-            additional_mappings={
-                'quizz_question': 'quizz_question_id'
-            },
-            export_order=4,
-            import_strategy=_create_user_quizz_questions_strategy()
-        ),
         
         'appointments': BaseEntitySchema.create_with_base(
             additional_columns=[
@@ -276,34 +379,38 @@ def create_schemas():
             export_order=4
         ),
         
-        'coachings_logbooks': BaseEntitySchema.create_with_base(
+        
+        
+        'recipes': BaseEntitySchema.create_with_base(
             additional_columns=[
-                ColumnDefinition('day', 'DATE', nullable=False),
-                ColumnDefinition('user_id', 'VARCHAR', foreign_key='users(id)'),
-                ColumnDefinition('coaching_id', 'VARCHAR', foreign_key='coachings(id)'),
-                ColumnDefinition('user_quizz_id', 'VARCHAR', foreign_key='user_quizzs(id)'),
+                ColumnDefinition('name', 'VARCHAR(255)', nullable=False),
             ],
-            additional_mappings={
-                'user': 'user_id',
-                'coaching': 'coaching_id',
-                'logbook': 'user_quizz_id'
-            },
-            mongo_collection='coachinglogbooks',
-            export_order=4
+            export_order=1
         ),
         
-        'quizz_items': BaseEntitySchema.create_with_base(
+        'menus': BaseEntitySchema.create_with_base(
             additional_columns=[
-                ColumnDefinition('text', 'text', nullable=False),
-                ColumnDefinition('quizz_question_id', 'VARCHAR', foreign_key='quizz_questions(id)'),
-                ColumnDefinition('user_quizz_question_id', 'VARCHAR', foreign_key='user_quizz_questions(id)')
+                ColumnDefinition('name', 'VARCHAR(255)', nullable=False),
             ],
-            additional_mappings={
-                'quizzQuestion': 'quizz_question_id',
-                'userQuizzQuestion': 'user_quizz_question_id'
+            export_order=2
+        ),
+        
+        'menu_recipes': TableSchema.create(
+            columns=[
+                ColumnDefinition('menu_id', 'VARCHAR', nullable=False, foreign_key='menus(id)'),
+                ColumnDefinition('recipe_id', 'VARCHAR', nullable=False, foreign_key='recipes(id)'),
+                ColumnDefinition('created_at', 'TIMESTAMP', nullable=False),
+                ColumnDefinition('updated_at', 'TIMESTAMP', nullable=False)
+            ],
+            mongo_collection='menu_recipes',
+            explicit_mappings={
+                'creation_date': 'created_at',
+                'update_date': 'updated_at',
+                'menu': 'menu_id',
+                'recipe': 'recipe_id'
             },
-            mongo_collection='items',
-            export_order=4
+            export_order=3,
+            unique_constraints=[['menu_id', 'recipe_id']]
         )
     }
     

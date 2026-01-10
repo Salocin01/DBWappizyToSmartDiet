@@ -78,41 +78,54 @@ class TableSchema:
         );
         """
     
-    def get_on_conflict_clause(self) -> str:
-        """Get the appropriate ON CONFLICT clause for this table"""
+    def get_on_conflict_clause(self, columns: list = None) -> str:
+        """Get the appropriate ON CONFLICT clause for this table
+
+        Args:
+            columns: Optional list of columns being inserted. If provided, only these columns
+                    will be included in the UPDATE clause. If None, all schema columns are used.
+        """
+        # Determine which columns to use for UPDATE clause
+        if columns:
+            # Use only the columns being inserted
+            insert_columns = set(columns)
+        else:
+            # Use all schema columns
+            insert_columns = {col.name for col in self.columns}
+
         # Check if table has an id column (primary key)
         id_column = next((col for col in self.columns if col.name == 'id' and col.primary_key), None)
         if id_column:
             # Build UPDATE SET clause for all columns except id and primary keys
             update_columns = []
             for col in self.columns:
-                if not col.primary_key:
+                if not col.primary_key and col.name in insert_columns:
                     update_columns.append(f"{col.name} = EXCLUDED.{col.name}")
-            
+
             if update_columns:
                 update_clause = ', '.join(update_columns)
                 return f" ON CONFLICT (id) DO UPDATE SET {update_clause}"
             else:
                 return " ON CONFLICT (id) DO NOTHING"
-        
+
         # Check if table has unique constraints
         if self.unique_constraints:
             # Use the first unique constraint
             constraint_cols = ', '.join(self.unique_constraints[0])
-            
+
             # Build UPDATE SET clause for all columns except those in unique constraint
             update_columns = []
             constraint_set = set(self.unique_constraints[0])
             for col in self.columns:
-                if col.name not in constraint_set and not col.primary_key:
+                if col.name not in constraint_set and not col.primary_key and col.name in insert_columns:
                     update_columns.append(f"{col.name} = EXCLUDED.{col.name}")
-            
+
             if update_columns:
                 update_clause = ', '.join(update_columns)
                 return f" ON CONFLICT ({constraint_cols}) DO UPDATE SET {update_clause}"
             else:
                 return f" ON CONFLICT ({constraint_cols}) DO NOTHING"
-        
+
         # No appropriate conflict resolution found
         return ""
 

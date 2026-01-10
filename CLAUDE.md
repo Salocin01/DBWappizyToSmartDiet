@@ -72,10 +72,17 @@ Simple 1:1 mapping for basic entities:
 - Uses `ON CONFLICT DO UPDATE` for automatic upserts
 
 #### ArrayExtractionStrategy
-Complex array normalization:
-- `users.registered_events[]` → `user_events` table
+Complex array normalization for direct collections:
+- `menu.recipes[]` → `menu_recipes` table (if stored as arrays)
 - Uses `ON CONFLICT DO UPDATE` on unique constraints
 - Updates timestamps when relationships already exist
+
+#### CustomUserEventsStrategy
+Array extraction with delete-and-insert pattern:
+- `users.registered_events[]` → `user_events` table
+- Uses incremental delete-and-insert pattern for changed users
+- Handles event registration and unregistration correctly
+- Unique constraint on (user_id, event_id)
 
 #### CustomUsersTargetsStrategy
 Multi-array extraction with type categorization:
@@ -160,7 +167,8 @@ ON CONFLICT (user_id, event_id) DO UPDATE SET
 | Strategy | Conflict Resolution | Update Handling |
 |----------|-------------------|-----------------|
 | DirectTranslationStrategy | `ON CONFLICT (id) DO UPDATE` | All columns updated except primary key |
-| ArrayExtractionStrategy | `ON CONFLICT (unique_constraint) DO UPDATE` | Timestamps updated |
+| ArrayExtractionStrategy | `ON CONFLICT (unique_constraint) DO UPDATE` | Timestamps updated (for separate collections like menu_recipes) |
+| CustomUserEventsStrategy | Delete + Insert (no conflict clause) | Full relationship refresh per user |
 | CustomUsersTargetsStrategy | Delete + Insert (no conflict clause) | Full relationship refresh per user |
 
 ### Users Targets Feature
@@ -198,6 +206,46 @@ For efficiency, the users_targets migration uses a delete-and-insert pattern:
 4. **Benefit**: Handles target additions, removals, and type changes correctly
 
 This approach ensures data consistency without complex diff logic while maintaining good performance through batch processing.
+
+### User Events Feature
+
+The `user_events` table represents a many-to-many relationship between users and events they are registered for.
+
+#### MongoDB Structure
+In MongoDB, users have an array of registered events:
+```javascript
+{
+  _id: ObjectId("..."),
+  registered_events: [
+    ObjectId("event1"),
+    ObjectId("event2"),
+    ObjectId("event3")
+  ]
+}
+```
+
+#### PostgreSQL Structure
+```sql
+CREATE TABLE user_events (
+  user_id VARCHAR NOT NULL REFERENCES users(id),
+  event_id VARCHAR NOT NULL REFERENCES events(id),
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  UNIQUE(user_id, event_id)
+);
+```
+
+#### Incremental Sync Behavior
+The user_events migration uses the same delete-and-insert pattern as users_targets:
+1. **Query**: Find users with changes to `registered_events` array after `after_date`
+2. **Delete**: Remove ALL existing event relationships for changed users
+3. **Insert**: Insert fresh relationships from the `registered_events` array
+4. **Benefit**: Handles event registration AND unregistration correctly
+
+**Why delete-and-insert?**
+- When a user unregisters from an event, it's removed from the MongoDB array
+- Without deletion, the old relationship would remain orphaned in PostgreSQL
+- This pattern ensures PostgreSQL perfectly mirrors MongoDB's current state
 
 ### Export Order & Dependencies
 Migration follows strict dependency order:

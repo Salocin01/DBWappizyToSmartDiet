@@ -335,11 +335,12 @@ In MongoDB, the `coachinglogbooks` collection has entries with:
 **Important characteristics:**
 - Not all documents have a `user` field (555,182 out of 563,086 documents have it)
 - Multiple documents can exist for the same user+day combination in MongoDB
-- The original MongoDB `_id` is NOT stored in PostgreSQL
+- The original MongoDB `_id` is NOT mapped to PostgreSQL (PostgreSQL generates its own sequential `id`)
 
 #### PostgreSQL Structure
 ```sql
 CREATE TABLE users_logbook (
+  id SERIAL PRIMARY KEY,
   user_id VARCHAR NOT NULL REFERENCES users(id),
   day DATE NOT NULL,
   created_at TIMESTAMP NOT NULL,
@@ -349,7 +350,7 @@ CREATE TABLE users_logbook (
 ```
 
 **Key design decisions:**
-- **No `id` column**: Unlike other tables, this doesn't store MongoDB's `_id`
+- **Auto-incremented `id` column**: PostgreSQL-generated sequential primary key (unlike other tables that use MongoDB's `_id`)
 - **Unique constraint on (user_id, day)**: Ensures only one entry per user per day
 - **Automatic deduplication**: Multiple MongoDB documents for same user+day → single PostgreSQL row
 

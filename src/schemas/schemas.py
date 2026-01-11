@@ -327,6 +327,7 @@ def create_schemas():
 
         'users_logbook': TableSchema.create(
             columns=[
+                ColumnDefinition('id', 'SERIAL', primary_key=True),
                 ColumnDefinition('user_id', 'VARCHAR', nullable=False, foreign_key='users(id)'),
                 ColumnDefinition('day', 'DATE', nullable=False),
                 ColumnDefinition('created_at', 'TIMESTAMP', nullable=False),

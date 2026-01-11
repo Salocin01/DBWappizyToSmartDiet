@@ -64,33 +64,98 @@ The system performs a complete structural transformation from MongoDB's document
 
 ### Migration Strategies
 
+The system uses three main strategy types to handle different data migration patterns:
+
 #### DirectTranslationStrategy
 Simple 1:1 mapping for basic entities:
-- Collections like `users`, `companies`, `ingredients`
-- Direct field mapping with type conversion
+- Collections like `users`, `companies`, `ingredients`, `events`
+- Direct field mapping with type conversion based on schema definitions
 - Handles missing fields as NULL values
 - Uses `ON CONFLICT DO UPDATE` for automatic upserts
+- Pattern: One document → One table row
 
 #### ArrayExtractionStrategy
 Complex array normalization for direct collections:
 - `menu.recipes[]` → `menu_recipes` table (if stored as arrays)
 - Uses `ON CONFLICT DO UPDATE` on unique constraints
+- Handles both embedded documents and ObjectId references in arrays
 - Updates timestamps when relationships already exist
+- Pattern: One document with array → Multiple table rows
 
-#### CustomUserEventsStrategy
-Array extraction with delete-and-insert pattern:
-- `users.registered_events[]` → `user_events` table
-- Uses incremental delete-and-insert pattern for changed users
-- Handles event registration and unregistration correctly
-- Unique constraint on (user_id, event_id)
+#### DeleteAndInsertStrategy (Base Class)
+Template method pattern for relationship tables requiring complete array synchronization:
 
-#### CustomUsersTargetsStrategy
-Multi-array extraction with type categorization:
-- `users.targets[]` → `users_targets` table (type='basic')
-- `users.specificity_targets[]` → `users_targets` table (type='specificity')
-- `users.health_targets[]` → `users_targets` table (type='health')
-- Uses incremental delete-and-insert pattern for changed users
-- Unique constraint on (user_id, target_id, type)
+**Architecture:**
+- Base class implementing the 4-step migration pattern
+- Template method `export_data()` handles common control flow
+- Subclasses implement data extraction and configuration methods
+
+**Why delete-and-insert pattern?**
+- When items are removed from MongoDB arrays, they disappear from the document
+- Upsert strategies (ON CONFLICT DO UPDATE) can't detect removals
+- Delete-and-insert ensures PostgreSQL perfectly mirrors MongoDB's current state
+- Example: User unregisters from an event → removed from `registered_events[]` array
+  - Without DELETE: orphaned relationship remains in PostgreSQL
+  - With DELETE + INSERT: PostgreSQL reflects current state accurately
+
+**The 4-step process:**
+1. **Get last migration date** (handled by transfert_data.py)
+   - Query PostgreSQL for latest timestamp
+   - Returns None for full import, datetime for incremental
+
+2. **Query changed documents** (implemented by subclasses)
+   - Find parent documents with changes to array fields
+   - Filter by creation/update dates using MongoDB $gte operator
+   - Uses methods: `count_total_documents()`, `get_documents()`
+
+3. **Extract relationship data** (implemented by subclasses)
+   - Transform document arrays into SQL row data
+   - Handle type discrimination (e.g., basic/specificity/health targets)
+   - Uses method: `extract_data_for_sql()`
+
+4. **Delete old + Insert fresh relationships** (handled by base class)
+   - DELETE all relationships for changed parent documents
+   - INSERT fresh relationships from current array state
+   - No ON CONFLICT clause needed (fresh insert)
+   - Uses method: `export_data()` (template method)
+
+**Subclass implementations:**
+
+**UserEventsStrategy** (extends DeleteAndInsertStrategy)
+- Migrates: `users.registered_events[]` → `user_events` table
+- Handles event registration and unregistration
+- Supports both ObjectId and embedded document formats
+- Unique constraint: (user_id, event_id)
+- Example change: User adds/removes event from registered list
+  - DELETE all user_events for that user_id
+  - INSERT fresh relationships from current registered_events array
+
+**UsersTargetsStrategy** (extends DeleteAndInsertStrategy)
+- Migrates three arrays to one table with type discrimination:
+  - `users.targets[]` → `users_targets` (type='basic')
+  - `users.specificity_targets[]` → `users_targets` (type='specificity')
+  - `users.health_targets[]` → `users_targets` (type='health')
+- Unique constraint: (user_id, target_id, type)
+- Example change: User modifies any of the three target arrays
+  - DELETE all users_targets for that user_id
+  - INSERT fresh relationships from all three arrays with appropriate types
+
+**Strategy Class Hierarchy:**
+```
+ImportStrategy (ABC)
+├── DirectTranslationStrategy
+├── ArrayExtractionStrategy
+└── DeleteAndInsertStrategy (Base class for relationships)
+    ├── UserEventsStrategy
+    └── UsersTargetsStrategy
+```
+
+**Benefits of this architecture:**
+- Eliminates ~220 lines of code duplication
+- Single source of truth for delete-and-insert logic
+- Easy to add new relationship tables (just extend DeleteAndInsertStrategy)
+- Template method pattern ensures consistent behavior
+- Maintains full backward compatibility
 
 ### Incremental Migration & Update Strategy
 

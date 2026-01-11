@@ -1,3 +1,92 @@
+"""
+Migration Import Strategies
+
+This module implements the 4-step migration pattern used to transfer data from MongoDB to PostgreSQL:
+
+STEP 1: Get Last Migration Date
+    - Query PostgreSQL for the latest created_at/updated_at timestamp
+    - Location: transfert_data.py calls get_last_insert_date()
+    - Returns: datetime or None (for full import)
+    - Purpose: Enable incremental sync to avoid re-processing unchanged data
+
+STEP 2: Query New/Updated Documents
+    - Query MongoDB for documents created or updated after the last migration date
+    - Implementation: strategy.count_total_documents() and strategy.get_documents()
+    - Uses ImportUtils.build_date_filter() to construct MongoDB query with $gte operator
+    - Filter: {$or: [{creation_date: {$gte: date}}, {update_date: {$gte: date}}]}
+    - Purpose: Fetch only changed data since last migration
+
+STEP 3: Transform Data
+    - Convert MongoDB documents to PostgreSQL-compatible row data
+    - Implementation: strategy.extract_data_for_sql()
+    - Handles ObjectId conversion, field mapping, and data type transformation
+    - Returns: (values, columns) tuple for SQL insertion
+    - Purpose: Adapt document structure to relational schema
+
+STEP 4: Execute Import
+    - Insert/update records in PostgreSQL with error handling
+    - Implementation: strategy.export_data() calls ImportUtils.execute_batch()
+    - Handles ON CONFLICT resolution, batch processing, and transaction management
+    - Uses savepoints for atomic batch operations with fallback to individual inserts
+    - Purpose: Persist data with integrity and error recovery
+
+Strategy Types:
+
+1. DirectTranslationStrategy
+   - Simple 1:1 collection-to-table mapping
+   - Uses ON CONFLICT DO UPDATE for upsert behavior
+   - Automatically maps fields based on schema.field_mappings
+   - Examples: users, companies, ingredients, events
+   - Pattern: One document → One table row
+
+2. ArrayExtractionStrategy
+   - Extracts array fields into separate relationship tables
+   - Uses ON CONFLICT DO UPDATE for upsert behavior
+   - Handles both embedded documents and ObjectId references
+   - Examples: menu_recipes (if stored as document arrays)
+   - Pattern: One document with array → Multiple table rows
+
+3. DeleteAndInsertStrategy (Base class)
+   - Handles relationship tables where arrays must be completely refreshed
+   - Uses delete-and-insert pattern instead of upsert
+   - Ensures both additions AND removals are correctly synced
+   - Subclasses: UserEventsStrategy, UsersTargetsStrategy
+   - Pattern:
+     1. Identify changed parent documents
+     2. DELETE all relationships for those parents
+     3. INSERT fresh relationships from current array state
+   - Why delete-and-insert?
+     * When a user unregisters from an event, it's removed from MongoDB array
+     * Without deletion, the old relationship would remain orphaned in PostgreSQL
+     * This pattern ensures PostgreSQL perfectly mirrors MongoDB's current state
+
+Configuration:
+
+- IMPORT_BY_BATCH (bool): Use batch processing (True) or single statements (False)
+  * True: Faster but requires rollback on any error
+  * False: Slower but isolates errors to individual records
+
+- DIRECT_IMPORT (bool): Execute SQL directly (True) or generate SQL files (False)
+  * True: Immediate execution with real-time error handling
+  * False: Generate .sql files for review/manual execution
+
+Error Handling:
+
+- Batch failures trigger automatic fallback to individual insert retry
+- Uses PostgreSQL savepoints for atomic rollback without losing progress
+- Tracks errors by type: foreign key constraint, NULL constraint, other
+- Continues processing after errors to maximize data import
+- Comprehensive error summary provided after each table migration
+
+Performance:
+
+- Default batch size: 5000 documents per query
+- Parallel document processing within batches
+- Connection pooling for PostgreSQL
+- Efficient MongoDB cursor-based pagination
+- Progress tracking with real-time console output
+"""
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Callable, Any
@@ -592,3 +681,158 @@ class ArrayExtractionStrategy(ImportStrategy):
             child_doc.get('creation_date'),
             child_doc.get('update_date')
         ]
+
+
+class DeleteAndInsertStrategy(ImportStrategy):
+    """
+    Base class for strategies that use delete-and-insert pattern for relationship tables.
+
+    This pattern is used when:
+    - Documents contain arrays that represent relationships
+    - Updates to the array should completely replace existing relationships
+    - We need to handle both additions AND removals from the array
+
+    The 4-step process:
+    1. Get last migration date (handled by transfert_data.py)
+    2. Query changed documents (implemented by subclasses)
+    3. Extract relationship data (implemented by subclasses)
+    4. Delete old + Insert fresh relationships (handled here)
+
+    Subclasses must implement:
+    - count_total_documents(): Count documents with changes
+    - get_documents(): Fetch changed documents with pagination
+    - extract_data_for_sql(): Transform document to SQL rows
+    - get_parent_id_from_document(): Extract parent entity ID
+    - get_delete_table_name(): Table name for deletion
+    - get_delete_column_name(): Column name for WHERE clause
+    """
+
+    @abstractmethod
+    def get_parent_id_from_document(self, document) -> str:
+        """Extract the parent entity ID from a document (e.g., user_id from user document)"""
+        pass
+
+    @abstractmethod
+    def get_delete_table_name(self, config: ImportConfig) -> str:
+        """Return the table name to delete from (usually config.table_name)"""
+        pass
+
+    @abstractmethod
+    def get_delete_column_name(self) -> str:
+        """Return the column name to use in DELETE WHERE clause (e.g., 'user_id')"""
+        pass
+
+    def export_data(self, conn, collection, config: ImportConfig):
+        """
+        Template method implementing the 4-step delete-and-insert pattern:
+        1. Query changed documents (via get_documents)
+        2. Extract relationship data (via extract_data_for_sql)
+        3. Delete existing relationships for changed parents
+        4. Insert fresh relationships
+        """
+        import os
+
+        print(f"Starting incremental {config.table_name} sync...")
+
+        # Ensure SQL exports directory exists
+        if not DIRECT_IMPORT:
+            os.makedirs("sql_exports", exist_ok=True)
+
+        # Get total count for progress tracking
+        total_docs = self.count_total_documents(collection, config)
+        processed_docs = 0
+        total_records = 0
+
+        # Process documents in batches
+        offset = 0
+        while True:
+            documents = self.get_documents(collection, config, offset)
+
+            if not documents:
+                break
+
+            batch_values = []
+            columns = None
+            batch_parent_ids = []
+
+            # Step 2 & 3: Extract data from documents
+            for doc in documents:
+                values, doc_columns = self.extract_data_for_sql(doc, config)
+                if values is not None:
+                    if columns is None:
+                        columns = doc_columns
+
+                    parent_id = self.get_parent_id_from_document(doc)
+                    batch_parent_ids.append(parent_id)
+
+                    # Handle both single records and multiple records per document
+                    if isinstance(values, list) and len(values) > 0 and isinstance(values[0], list):
+                        batch_values.extend(values)
+                    else:
+                        batch_values.append(values)
+
+            # Step 3: Delete existing relationships for changed parents
+            if batch_parent_ids and DIRECT_IMPORT:
+                self._delete_existing_relationships(
+                    conn, batch_parent_ids, config
+                )
+
+            # Step 4: Insert fresh relationships
+            if batch_values:
+                actual_insertions = ImportUtils.execute_batch(
+                    conn, batch_values, columns, config.table_name,
+                    config.summary_instance, use_on_conflict=False,
+                    on_conflict_clause=""
+                )
+                total_records += actual_insertions
+
+                if DIRECT_IMPORT:
+                    print(f"Inserted {actual_insertions} fresh relationships for {len(batch_parent_ids)} parents")
+                    print(self.get_progress_message(
+                        processed_docs + len(documents), total_docs, config.table_name,
+                        total_records=total_records
+                    ))
+                else:
+                    print(f"Generated SQL for {total_records} records from {processed_docs + len(documents)}/{total_docs} documents for {config.table_name}")
+
+            processed_docs += len(documents)
+            offset += config.batch_size
+
+            if len(documents) < config.batch_size:
+                break
+
+        action = "processing" if DIRECT_IMPORT else "SQL generation for"
+        print(f"Completed incremental {action} {total_records} records from {processed_docs} documents for {config.table_name}")
+
+        if not DIRECT_IMPORT:
+            # Execute the accumulated SQL file
+            sql_file_path = f"sql_exports/{config.table_name}_import.sql"
+            if os.path.exists(sql_file_path):
+                executed_count = ImportUtils.execute_sql_file(conn, sql_file_path, config.summary_instance)
+                os.remove(sql_file_path)
+                print(f"Executed and deleted SQL file: {sql_file_path} ({executed_count} statements)")
+                return executed_count
+
+        return total_records
+
+    def _delete_existing_relationships(self, conn, parent_ids: List[str], config: ImportConfig):
+        """Delete existing relationships for the specified parent IDs"""
+        cursor = conn.cursor()
+        try:
+            placeholders = ', '.join(['%s'] * len(parent_ids))
+            table_name = self.get_delete_table_name(config)
+            column_name = self.get_delete_column_name()
+            delete_sql = f"DELETE FROM {table_name} WHERE {column_name} IN ({placeholders})"
+            cursor.execute(delete_sql, parent_ids)
+            deleted_count = cursor.rowcount
+            conn.commit()
+            print(f"Deleted {deleted_count} existing relationships for {len(parent_ids)} updated parents")
+        except Exception as e:
+            print(f"Error deleting existing relationships: {e}")
+            conn.rollback()
+        finally:
+            cursor.close()
+
+    def get_use_on_conflict(self) -> bool:
+        """Delete-and-insert doesn't use ON CONFLICT"""
+        return False

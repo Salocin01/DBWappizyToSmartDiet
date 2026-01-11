@@ -35,7 +35,7 @@ This project is a Python-based database migration tool that transfers data from 
 The project migrates the following entities (in order):
 1. **Base entities**: ingredients, appointment_types, companies, offers, categories, targets, recipes
 2. **Users & Events**: events, users, menus
-3. **Relationships**: user_events, users_targets, messages, coachings, menu_recipes
+3. **Relationships**: user_events, users_targets, messages, coachings, users_logbook, menu_recipes
 4. **Complex data**: appointments
 
 ### Special Features
@@ -144,6 +144,7 @@ Template method pattern for relationship tables requiring complete array synchro
 ```
 ImportStrategy (ABC)
 ├── DirectTranslationStrategy
+│   └── UsersLogbookStrategy (custom filtering)
 ├── ArrayExtractionStrategy
 └── DeleteAndInsertStrategy (Base class for relationships)
     ├── UserEventsStrategy
@@ -232,9 +233,10 @@ ON CONFLICT (user_id, event_id) DO UPDATE SET
 | Strategy | Conflict Resolution | Update Handling |
 |----------|-------------------|-----------------|
 | DirectTranslationStrategy | `ON CONFLICT (id) DO UPDATE` | All columns updated except primary key |
+| UsersLogbookStrategy | `ON CONFLICT (user_id, day) DO UPDATE` | Timestamps updated; filters documents with user field |
 | ArrayExtractionStrategy | `ON CONFLICT (unique_constraint) DO UPDATE` | Timestamps updated (for separate collections like menu_recipes) |
-| CustomUserEventsStrategy | Delete + Insert (no conflict clause) | Full relationship refresh per user |
-| CustomUsersTargetsStrategy | Delete + Insert (no conflict clause) | Full relationship refresh per user |
+| UserEventsStrategy | Delete + Insert (no conflict clause) | Full relationship refresh per user |
+| UsersTargetsStrategy | Delete + Insert (no conflict clause) | Full relationship refresh per user |
 
 ### Users Targets Feature
 
@@ -312,6 +314,76 @@ The user_events migration uses the same delete-and-insert pattern as users_targe
 - Without deletion, the old relationship would remain orphaned in PostgreSQL
 - This pattern ensures PostgreSQL perfectly mirrors MongoDB's current state
 
+### Users Logbook Feature
+
+The `users_logbook` table represents a deduplicated tracking of coaching logbook entries per user per day. This table consolidates potentially multiple MongoDB documents for the same user-day combination into a single PostgreSQL row.
+
+#### MongoDB Structure
+In MongoDB, the `coachinglogbooks` collection has entries with:
+```javascript
+{
+  _id: ObjectId("..."),
+  day: ISODate("2024-03-06T23:00:00Z"),
+  user: ObjectId("6418d6af3015567c5af862ee"),  // Some documents may not have this field
+  logbook: ObjectId("65eb4414a1a7f677042c3a62"),
+  coaching: ObjectId("64ef0616b99d86061670228a"),
+  creation_date: ISODate("2024-03-08T17:00:04.143Z"),
+  update_date: ISODate("2024-03-08T17:00:04.143Z")
+}
+```
+
+**Important characteristics:**
+- Not all documents have a `user` field (555,182 out of 563,086 documents have it)
+- Multiple documents can exist for the same user+day combination in MongoDB
+- The original MongoDB `_id` is NOT stored in PostgreSQL
+
+#### PostgreSQL Structure
+```sql
+CREATE TABLE users_logbook (
+  user_id VARCHAR NOT NULL REFERENCES users(id),
+  day DATE NOT NULL,
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  UNIQUE(user_id, day)
+);
+```
+
+**Key design decisions:**
+- **No `id` column**: Unlike other tables, this doesn't store MongoDB's `_id`
+- **Unique constraint on (user_id, day)**: Ensures only one entry per user per day
+- **Automatic deduplication**: Multiple MongoDB documents for same user+day → single PostgreSQL row
+
+#### Custom Import Strategy
+
+Uses a custom `UsersLogbookStrategy` (extends `DirectTranslationStrategy`):
+- **Filtering**: Only processes documents where `user` field exists and is not null
+- **Conflict resolution**: `ON CONFLICT (user_id, day) DO UPDATE SET created_at, updated_at`
+- **Deduplication**: If multiple MongoDB documents have same (user, day), the last one processed updates the PostgreSQL row
+
+#### Migration Behavior
+
+**Full import:**
+```
+555,182 MongoDB documents (with user field) → PostgreSQL rows (deduplicated by user_id+day)
+```
+
+**Incremental import:**
+- Filters documents by: `user IS NOT NULL AND (creation_date >= after_date OR update_date >= after_date)`
+- Updates existing rows with latest timestamps
+- Inserts new user-day combinations
+
+**Example scenario:**
+- MongoDB has 3 documents: user=X, day=2024-03-06 (created at different times)
+- PostgreSQL will have 1 row: user=X, day=2024-03-06 (with latest timestamps)
+- On subsequent migrations, if any of these 3 documents are updated, the PostgreSQL row updates
+
+#### Use Case
+This table provides a normalized view of which days each user has logbook entries, regardless of how many individual logbook records exist for that day. Useful for:
+- Tracking user activity/engagement by day
+- Identifying active coaching days
+- Calculating user streaks or patterns
+- Efficient queries for "days with entries" without counting duplicate logbook records
+
 ### Export Order & Dependencies
 Migration follows strict dependency order:
 
@@ -322,7 +394,7 @@ Migration follows strict dependency order:
    - `events`, `users`, `menus`
 
 3. **Order 3**: Relationship tables and arrays
-   - `user_events`, `users_targets`, `messages`, `coachings`, `menu_recipes`
+   - `user_events`, `users_targets`, `messages`, `coachings`, `users_logbook`, `menu_recipes`
 
 4. **Order 4**: Complex dependent data
    - `appointments`

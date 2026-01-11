@@ -73,6 +73,26 @@ def _create_user_events_strategy():
     return UserEventsStrategy()
 
 
+def _create_users_logbook_strategy():
+    """Create strategy for users_logbook with user field filter"""
+    from src.migration.import_strategies import DirectTranslationStrategy, ImportConfig, ImportUtils
+
+    class UsersLogbookStrategy(DirectTranslationStrategy):
+        def count_total_documents(self, collection, config: ImportConfig) -> int:
+            """Count documents that have a user field (not None)"""
+            mongo_filter = {'user': {'$exists': True, '$ne': None}}
+            mongo_filter.update(ImportUtils.build_date_filter(config.after_date))
+            return collection.count_documents(mongo_filter)
+
+        def get_documents(self, collection, config: ImportConfig, offset: int = 0):
+            """Get documents with user field"""
+            mongo_filter = {'user': {'$exists': True, '$ne': None}}
+            mongo_filter.update(ImportUtils.build_date_filter(config.after_date))
+            return list(collection.find(mongo_filter).skip(offset).limit(config.batch_size))
+
+    return UsersLogbookStrategy()
+
+
 def _create_users_targets_strategy():
     """Create strategy for users_targets array extraction from multiple target fields"""
     from src.migration.import_strategies import DeleteAndInsertStrategy, ImportConfig, ImportUtils
@@ -304,8 +324,26 @@ def create_schemas():
             },
             export_order=3
         ),
-        
-        
+
+        'users_logbook': TableSchema.create(
+            columns=[
+                ColumnDefinition('user_id', 'VARCHAR', nullable=False, foreign_key='users(id)'),
+                ColumnDefinition('day', 'DATE', nullable=False),
+                ColumnDefinition('created_at', 'TIMESTAMP', nullable=False),
+                ColumnDefinition('updated_at', 'TIMESTAMP', nullable=False)
+            ],
+            mongo_collection='coachinglogbooks',
+            explicit_mappings={
+                'user': 'user_id',
+                'creation_date': 'created_at',
+                'update_date': 'updated_at'
+            },
+            export_order=3,
+            import_strategy=_create_users_logbook_strategy(),
+            unique_constraints=[['user_id', 'day']]
+        ),
+
+
         'appointments': BaseEntitySchema.create_with_base(
             additional_columns=[
                 ColumnDefinition('user_id', 'VARCHAR', foreign_key='users(id)'),

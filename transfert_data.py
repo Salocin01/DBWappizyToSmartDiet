@@ -52,6 +52,24 @@ if __name__ == "__main__":
         )
 
         # =======================================================================
+        # CHECK: Does strategy have custom export_data implementation?
+        # =======================================================================
+        # Some strategies (like UsersLogbooksMomentsDetailsStrategy) override
+        # export_data to use pre-computed data and should bypass normal flow
+        strategy_class = strategy.__class__
+        uses_custom_export = (
+            hasattr(strategy_class, 'export_data') and
+            strategy_class.export_data is not strategy_class.__bases__[0].export_data
+        )
+
+        if uses_custom_export:
+            print(f"📦 Strategy uses custom export_data - calling directly...")
+            total_records_processed = strategy.export_data(conn, collection, config)
+            print(f"✅ Completed: {total_records_processed} total records processed for {table_name}")
+            print_import_summary(table_name, entity_summary)
+            continue
+
+        # =======================================================================
         # STEP 2: Query New/Updated Documents from MongoDB
         # =======================================================================
         # Count documents matching the filter criteria
@@ -87,6 +105,9 @@ if __name__ == "__main__":
 
             print(f"   → Processing batch: {offset} to {offset + len(documents)} of {total_documents}")
 
+            # Reset skip counter for this batch
+            config._skip_count = {}
+
             # Transform documents to SQL format
             all_batch_values = []
             columns = None
@@ -112,10 +133,22 @@ if __name__ == "__main__":
                         all_batch_values.append(values)
 
             if not all_batch_values:
+                # Print skip statistics if available
+                if hasattr(config, '_skip_count') and config._skip_count:
+                    print(f"   ⚠️  All {len(documents)} documents filtered out. Skip reasons:")
+                    for reason, count in sorted(config._skip_count.items(), key=lambda x: -x[1]):
+                        print(f"       - {reason}: {count}")
                 offset += batch_size
                 continue
 
             print(f"   → Transformed {len(documents)} documents into {len(all_batch_values)} SQL rows")
+
+            # Print skip statistics if any documents were skipped
+            if hasattr(config, '_skip_count') and config._skip_count:
+                skipped_count = sum(config._skip_count.values())
+                print(f"   ℹ️  Skipped {skipped_count} documents. Skip reasons:")
+                for reason, count in sorted(config._skip_count.items(), key=lambda x: -x[1]):
+                    print(f"       - {reason}: {count}")
 
             # =======================================================================
             # STEP 4: Execute Import to PostgreSQL

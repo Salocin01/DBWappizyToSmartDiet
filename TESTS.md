@@ -13,11 +13,12 @@ The test suite comprehensively covers the 4-step migration pattern and all three
 
 ```
 tests/
-├── test_transfert_data.py              # Main migration flow (NEW - explicit 4-step pattern)
-├── test_delete_and_insert_strategy.py  # DeleteAndInsertStrategy base class
-├── test_user_events_strategy.py        # UserEventsStrategy implementation
-├── test_users_targets_strategy.py      # UsersTargetsStrategy implementation
-└── test_migration_integration.py       # End-to-end integration tests
+├── test_transfert_data.py                      # Main migration flow (NEW - explicit 4-step pattern)
+├── test_delete_and_insert_strategy.py          # DeleteAndInsertStrategy base class
+├── test_user_events_strategy.py                # UserEventsStrategy implementation
+├── test_users_targets_strategy.py              # UsersTargetsStrategy implementation
+├── test_users_logbooks_moments_strategy.py     # UsersLogbooksMomentsStrategy & Details (NEW)
+└── test_migration_integration.py               # End-to-end integration tests
 ```
 
 ## Test Files Description
@@ -132,7 +133,49 @@ test_full_export_cycle()                     # Complete migration cycle
 **Lines of code:** ~380 lines
 **Test count:** 16 tests
 
-### 5. `test_migration_integration.py`
+### 5. `test_users_logbooks_moments_strategy.py` ⭐ NEW
+
+**Purpose:** Tests UsersLogbooksMomentsStrategy and UsersLogbooksMomentsDetailsStrategy (complex cross-database lookups with filtering).
+
+**What it tests:**
+- ✅ Cross-database JOINs (MongoDB → PostgreSQL)
+- ✅ Question type filtering (`QUIZZ_TYPE_LOGBOOK`)
+- ✅ Non-empty text validation
+- ✅ Multi-level document traversal (userquizzs → userquizzquestions → quizzquestions → items)
+- ✅ Multiple answers per question
+- ✅ Skipping logic for invalid records
+
+**Key test scenarios for UsersLogbooksMomentsStrategy:**
+```python
+test_extract_with_valid_logbook_question()        # Successful extraction with filtering
+test_extract_skips_non_logbook_questions()        # Filters non-LOGBOOK type
+test_extract_skips_empty_items()                  # Filters questions with no answers
+test_extract_skips_no_matching_users_logbook()    # No PostgreSQL JOIN match
+test_extract_skips_empty_questions_array()        # Empty questions[] array
+```
+
+**Key test scenarios for UsersLogbooksMomentsDetailsStrategy:**
+```python
+test_extract_with_logbook_questions_and_answers() # Multiple answers extraction
+test_extract_skips_non_logbook_questions()        # Type filtering
+test_extract_filters_empty_text_items()           # MongoDB filter verification
+test_extract_handles_multiple_questions()         # Multiple questions per userquizz
+test_extract_empty_questions_array()              # Empty array handling
+test_count_documents_with_date_filter()           # Incremental sync
+test_get_documents_with_projection()              # Field projection
+test_strategy_uses_on_conflict()                  # Upsert behavior
+test_progress_message_format()                    # Progress messages
+```
+
+**Filter criteria:**
+- Only questions where `quizzquestion.type = 'QUIZZ_TYPE_LOGBOOK'`
+- Only items where `text` is not empty (not null, not empty string)
+- MongoDB query: `{'text': {'$exists': True, '$ne': '', '$ne': None}}`
+
+**Lines of code:** ~690 lines
+**Test count:** 14 tests (6 for moments, 9 for details)
+
+### 6. `test_migration_integration.py`
 
 **Purpose:** End-to-end integration tests for realistic migration scenarios.
 
@@ -191,6 +234,9 @@ python3 -m pytest tests/test_user_events_strategy.py -v
 
 # Test UsersTargetsStrategy
 python3 -m pytest tests/test_users_targets_strategy.py -v
+
+# Test UsersLogbooksMomentsStrategy (NEW)
+python3 -m pytest tests/test_users_logbooks_moments_strategy.py -v
 
 # Test integration scenarios
 python3 -m pytest tests/test_migration_integration.py -v
@@ -251,12 +297,14 @@ tests/test_transfert_data.py::TestExplicitFourStepFlow::test_full_migration_flow
 | **DeleteAndInsertStrategy** | ✅ Complete | test_delete_and_insert_strategy.py |
 | **UserEventsStrategy** | ✅ Complete | test_user_events_strategy.py |
 | **UsersTargetsStrategy** | ✅ Complete | test_users_targets_strategy.py |
+| **UsersLogbooksMomentsStrategy** | ✅ Complete | test_users_logbooks_moments_strategy.py |
+| **UsersLogbooksMomentsDetailsStrategy** | ✅ Complete | test_users_logbooks_moments_strategy.py |
 | **Integration Scenarios** | ✅ Complete | test_migration_integration.py |
 | **DirectTranslationStrategy** | ✅ Covered | test_transfert_data.py, test_migration_integration.py |
 | **ArrayExtractionStrategy** | ⚠️ Partial | test_migration_integration.py |
 
-**Total Test Count:** ~67 tests
-**Total Test Code:** ~1,873 lines
+**Total Test Count:** ~81 tests
+**Total Test Code:** ~2,563 lines
 
 ## Adding New Tests
 

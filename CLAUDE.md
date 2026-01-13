@@ -36,7 +36,9 @@ The project migrates the following entities (in order):
 1. **Base entities**: ingredients, appointment_types, companies, offers, categories, targets, recipes
 2. **Users & Events**: events, users, menus
 3. **Relationships**: user_events, users_targets, messages, coachings, users_logbook, menu_recipes
-4. **Complex data**: appointments
+4. **Logbooks moments**: users_logbooks_moments
+5. **Logbooks moments details**: users_logbooks_moments_details
+6. **Complex data**: appointments
 
 ### Special Features
 - **Array Extraction**: Handles MongoDB arrays as separate PostgreSQL tables
@@ -45,6 +47,8 @@ The project migrates the following entities (in order):
 - **Foreign Key Management**: Maintains referential integrity during migration
 - **Custom Strategies**: Specialized import logic for complex data structures
 - **Multi-Array Consolidation**: Combines multiple MongoDB arrays into single PostgreSQL tables with type discrimination (e.g., users_targets)
+- **Cross-Database JOINs**: Performs complex lookups across MongoDB and PostgreSQL during migration (e.g., users_logbooks_moments linking through coachinglogbooks)
+- **Nested Document Traversal**: Follows multi-level references across collections to extract normalized data (e.g., userquizzs → userquizzquestions → quizzquestions → items)
 
 ## Database Transformation Process
 
@@ -385,6 +389,229 @@ This table provides a normalized view of which days each user has logbook entrie
 - Calculating user streaks or patterns
 - Efficient queries for "days with entries" without counting duplicate logbook records
 
+### Users Logbooks Moments Feature
+
+The `users_logbooks_moments` and `users_logbooks_moments_details` tables represent a comprehensive question-answer tracking system for user coaching logbooks. These tables capture quiz-based assessments that users complete as part of their coaching journey.
+
+#### Data Flow Overview
+
+The migration involves five MongoDB collections working together:
+```
+coachinglogbooks → logbook field → userquizzs
+                                      ↓
+                               questions[] array
+                                      ↓
+                            userquizzquestions
+                                      ↓
+                            quizzQuestion field → quizzquestions (title)
+                            userQuizzQuestion ← items (text)
+```
+
+#### MongoDB Collections Structure
+
+**1. coachinglogbooks**
+```javascript
+{
+  _id: ObjectId("..."),
+  day: ISODate("2024-03-06T23:00:00Z"),
+  user: ObjectId("..."),
+  logbook: ObjectId("...") // References userquizzs._id
+}
+```
+
+**2. userquizzs** (User Quiz instances)
+```javascript
+{
+  _id: ObjectId("..."),
+  name: "Morning Check-in",  // Becomes 'type' in PostgreSQL
+  questions: [ObjectId("..."), ObjectId("...")],  // Array of userquizzquestions
+  creation_date: ISODate("2024-03-08T17:00:04.143Z"),
+  update_date: ISODate("2024-03-08T17:00:04.143Z")
+}
+```
+
+**3. userquizzquestions** (User's answer instances)
+```javascript
+{
+  _id: ObjectId("..."),
+  quizzQuestion: ObjectId("...") // References quizzquestions._id
+}
+```
+
+**4. quizzquestions** (Question templates)
+```javascript
+{
+  _id: ObjectId("..."),
+  title: "How are you feeling today?", // Question text
+  creation_date: ISODate("..."),
+  update_date: ISODate("...")
+}
+```
+
+**5. items** (User's answers)
+```javascript
+{
+  _id: ObjectId("..."),
+  text: "I feel great!",  // Answer text
+  userQuizzQuestion: ObjectId("..."), // References userquizzquestions._id
+  creation_date: ISODate("..."),
+  update_date: ISODate("...")
+}
+```
+
+#### PostgreSQL Structure
+
+**users_logbooks_moments**
+```sql
+CREATE TABLE users_logbooks_moments (
+  id VARCHAR PRIMARY KEY,                    -- From userquizzs._id
+  user_logbook_id INTEGER NOT NULL,          -- FK to users_logbook.id
+  type VARCHAR(255) NOT NULL,                -- From userquizzs.name
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  FOREIGN KEY (user_logbook_id) REFERENCES users_logbook(id)
+);
+```
+
+**users_logbooks_moments_details**
+```sql
+CREATE TABLE users_logbooks_moments_details (
+  id VARCHAR PRIMARY KEY,                      -- From items._id
+  user_logbook_moment_id VARCHAR NOT NULL,     -- FK to users_logbooks_moments.id
+  question TEXT NOT NULL,                      -- From quizzquestions.title
+  answer TEXT NOT NULL,                        -- From items.text
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  FOREIGN KEY (user_logbook_moment_id) REFERENCES users_logbooks_moments(id)
+);
+```
+
+#### Key Design Decisions
+
+**users_logbooks_moments:**
+- **Complex JOIN pattern**: Links `userquizzs` → `coachinglogbooks` → `users_logbook` via (user_id, day)
+- **Handles deduplication**: Multiple coaching logbooks per day → one users_logbook row → multiple moments per day
+- **Type discrimination**: Uses `userquizzs.name` as the moment type
+
+**users_logbooks_moments_details:**
+- **Multiple answers per question**: One question can have multiple answer rows (1-to-many relationship)
+- **Flattened structure**: Normalizes nested MongoDB documents into flat relational rows
+- **Question text denormalization**: Stores question text directly (from `quizzquestions.title`) for query efficiency
+
+#### Custom Import Strategies
+
+**Performance Optimization: Single-Pass Processing**
+
+To avoid duplicate MongoDB queries, both tables are processed in a single pass:
+- **UsersLogbooksMomentsStrategy** generates BOTH moments AND details data simultaneously
+- Details are stored in a module-level cache (`_moments_details_batch_cache`)
+- **UsersLogbooksMomentsDetailsStrategy** retrieves and inserts the pre-computed details
+- This eliminates redundant lookups across 5 collections (userquizzs, userquizzquestions, quizzquestions, items, coachinglogbooks)
+
+**UsersLogbooksMomentsStrategy** (extends `DirectTranslationStrategy`)
+
+Process for each `userquizz` document:
+1. **Filter validation**: Check if at least one question meets ALL criteria:
+   - Question type is `QUIZZ_TYPE_LOGBOOK`
+   - Has at least one non-empty answer (from `items.text` or inline fields)
+2. Query `coachinglogbooks` collection where `logbook = userquizz._id`
+3. Extract `user` and `day` from the matched coaching logbook
+4. Execute PostgreSQL JOIN: `SELECT id FROM users_logbook WHERE user_id = ? AND day = ?`
+5. Use the returned `users_logbook.id` as the foreign key
+6. **Generate moment row** for users_logbooks_moments
+7. **ALSO generate detail rows** for users_logbooks_moments_details (stored in cache)
+8. Skip records where:
+   - No valid questions found (filter validation fails)
+   - No matching coaching logbook exists
+   - No users_logbook entry exists
+
+This strategy handles the complex scenario where:
+- Multiple `coachinglogbooks` can exist for the same user+day (different logbooks)
+- `users_logbook` deduplicates to one row per user+day
+- Each `userquizz` becomes a separate moment linked to the deduplicated logbook entry
+- **Only logbook-type questions with actual content are included**
+- **Generates data for both tables in a single pass** (optimization)
+
+**UsersLogbooksMomentsDetailsStrategy** (extends `ImportStrategy`)
+
+This is a **stub strategy** that retrieves pre-computed details from the module-level cache:
+1. Returns 0 from `count_total_documents()` (no documents to process)
+2. Returns empty list from `get_documents()` (no iteration needed)
+3. Overrides `export_data()` to:
+   - Retrieve pre-computed details from `_moments_details_batch_cache`
+   - Batch insert all details at once
+   - Clear the cache after successful insertion
+
+**Why this optimization?**
+- Both strategies originally processed the same userquizzs documents
+- Each required lookups across 5 MongoDB collections
+- By combining the processing, we:
+  - Reduce MongoDB queries by ~50%
+  - Improve migration performance significantly
+  - Maintain data consistency (same source documents for both tables)
+
+#### Migration Behavior
+
+**Full import:**
+```
+userquizzs documents → users_logbooks_moments rows (filtered by successful JOIN)
+  ↓
+questions[] arrays → users_logbooks_moments_details rows (one per answer/item)
+```
+
+**Incremental import:**
+- Uses standard date filtering: `creation_date >= after_date OR update_date >= after_date`
+- Updates existing records via `ON CONFLICT DO UPDATE`
+- Re-processes all questions for updated userquizzs
+
+**Data relationships:**
+```
+One users_logbook row (deduplicated by user+day)
+  ↓
+Multiple users_logbooks_moments (one per userquizz/logbook)
+  ↓
+Multiple users_logbooks_moments_details (one per answer)
+```
+
+**Example scenario:**
+```
+User X has 2 coaching logbooks on 2024-03-06:
+- Logbook A (Morning Check-in with 3 questions, 5 answers total)
+- Logbook B (Evening Reflection with 2 questions, 3 answers total)
+
+PostgreSQL structure:
+- users_logbook: 1 row (user_id=X, day=2024-03-06)
+- users_logbooks_moments: 2 rows (one for A, one for B)
+- users_logbooks_moments_details: 8 rows (5 for A + 3 for B)
+```
+
+#### Use Cases
+
+**users_logbooks_moments:**
+- Track different types of check-ins/assessments per day
+- Identify which quiz templates users completed
+- Analyze completion patterns by moment type
+- Support multiple assessments per day without deduplication
+
+**users_logbooks_moments_details:**
+- Store and retrieve user responses to coaching questions
+- Analyze sentiment and patterns in free-text answers
+- Generate reports showing user progress over time
+- Support multiple answers per question (e.g., multi-select responses)
+- Full-text search across user responses
+
+#### Important Notes
+
+1. **Dependency chain**: Both tables require `users_logbook` to be populated first (export_order 3 → 4 → 5)
+2. **Question type filtering**: Only questions with `type = 'QUIZZ_TYPE_LOGBOOK'` are included
+3. **Answer validation**: Only items with non-empty text are migrated (empty strings and null values are excluded)
+4. **Skipped records**: Moments are skipped when:
+   - No valid QUIZZ_TYPE_LOGBOOK questions with non-empty answers exist
+   - No matching users_logbook entry exists
+   - No matching coachinglogbooks entry exists
+5. **Question denormalization**: Question text is copied to details table for performance (avoids JOIN on every query)
+6. **Multiple answers**: System correctly handles multiple items per question (common in checkbox-style questions)
+
 ### Export Order & Dependencies
 Migration follows strict dependency order:
 
@@ -397,7 +624,13 @@ Migration follows strict dependency order:
 3. **Order 3**: Relationship tables and arrays
    - `user_events`, `users_targets`, `messages`, `coachings`, `users_logbook`, `menu_recipes`
 
-4. **Order 4**: Complex dependent data
+4. **Order 4**: Users logbooks moments (depends on users_logbook)
+   - `users_logbooks_moments`
+
+5. **Order 5**: Users logbooks moments details (depends on users_logbooks_moments)
+   - `users_logbooks_moments_details`
+
+6. **Order 6**: Complex dependent data
    - `appointments`
 
 ## Dependencies

@@ -15,6 +15,8 @@ This project is a Python-based database migration tool that transfers data from 
 │   ├── migration/
 │   │   ├── data_export.py         # Core data export logic
 │   │   ├── import_strategies.py   # Custom import strategies
+│   │   ├── runner.py              # Migration orchestration entrypoint
+│   │   ├── strategies/            # Strategy implementations by domain
 │   │   └── import_summary.py      # Migration reporting
 │   ├── schemas/
 │   │   ├── schemas.py            # Table definitions and mappings
@@ -26,7 +28,8 @@ This project is a Python-based database migration tool that transfers data from 
 ## Key Components
 
 ### Main Scripts
-- `transfert_data.py` - Main migration script that processes all tables
+- `transfert_data.py` - CLI entrypoint that invokes the migration runner
+- `src/migration/runner.py` - Main migration orchestration (iterates schemas, runs strategies)
 - `refresh_mongo_db.py` - MongoDB database refresh utility
 - `refresh_postgres_db.py` - PostgreSQL database refresh utility
 - `check_db_differences.py` - Database comparison tool
@@ -91,7 +94,7 @@ Template method pattern for relationship tables requiring complete array synchro
 - Subclasses implement data extraction and configuration methods
 
 **Why delete-and-insert pattern?**
-- When items are removed from MongoDB arrays, they disappear from the document
+   - When items are removed from MongoDB arrays, they disappear from the document
 - Upsert strategies (ON CONFLICT DO UPDATE) can't detect removals
 - Delete-and-insert ensures PostgreSQL perfectly mirrors MongoDB's current state
 - Example: User unregisters from an event → removed from `registered_events[]` array
@@ -99,7 +102,7 @@ Template method pattern for relationship tables requiring complete array synchro
   - With DELETE + INSERT: PostgreSQL reflects current state accurately
 
 **The 4-step process:**
-1. **Get last migration date** (handled by transfert_data.py)
+1. **Get last migration date** (handled by `src/migration/runner.py`)
    - Query PostgreSQL for latest timestamp
    - Returns None for full import, datetime for incremental
 
@@ -449,7 +452,8 @@ python -m pytest tests/
 
 ### Modifying Import Logic
 - Edit `src/migration/data_export.py` for core export logic
-- Add custom strategies in `src/migration/import_strategies.py`
+- Add custom strategies in `src/migration/strategies/` and reference them from schemas
+- User-focused strategies live in `src/migration/strategies/user_strategies.py`
 
 ### Database Connection Issues
 - Check environment variables in `.env` file

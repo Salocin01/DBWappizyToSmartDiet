@@ -13,7 +13,7 @@ The test suite comprehensively covers the 4-step migration pattern and all three
 
 ```
 tests/
-├── test_transfert_data.py              # Main migration flow (NEW - explicit 4-step pattern)
+├── test_transfert_data.py              # Migration flow via runner/strategies
 ├── test_delete_and_insert_strategy.py  # DeleteAndInsertStrategy base class
 ├── test_user_events_strategy.py        # UserEventsStrategy implementation
 ├── test_users_targets_strategy.py      # UsersTargetsStrategy implementation
@@ -22,9 +22,9 @@ tests/
 
 ## Test Files Description
 
-### 1. `test_transfert_data.py` ⭐ NEW
+### 1. `test_transfert_data.py`
 
-**Purpose:** Tests the explicit 4-step migration flow in the main `transfert_data.py` script.
+**Purpose:** Tests the migration flow executed by `src/migration/runner.py` via `transfert_data.py`.
 
 **What it tests:**
 - ✅ **Step 1**: Getting last migration date from PostgreSQL
@@ -40,7 +40,7 @@ test_step3_transform_single_document()        # Single document transformation
 test_step3_transform_batch_of_documents()     # Batch transformation
 test_step3_handles_multiple_rows_per_document() # Array extraction (1 doc → N rows)
 test_step4_upsert_with_on_conflict()          # ON CONFLICT DO UPDATE
-test_step4_delete_and_insert_pattern()        # DELETE + INSERT pattern
+test_step4_delete_and_insert_pattern()        # DELETE + INSERT pattern (strategy-driven)
 test_full_migration_flow_for_simple_table()   # End-to-end for users table
 test_full_migration_flow_for_relationship_table() # End-to-end for user_events
 test_pagination_across_multiple_batches()     # Handling 5000+ documents
@@ -302,7 +302,7 @@ def test_your_scenario():
 
 ### For Main Flow Modifications
 
-Add to `test_transfert_data.py`:
+Add to `test_transfert_data.py` (runner-driven flow):
 ```python
 def test_your_new_feature():
     """Test description"""

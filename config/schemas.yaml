@@ -1,0 +1,296 @@
+tables:
+  ingredients:
+    include_base: true
+    additional_columns:
+      - name: name
+        sql_type: VARCHAR(255)
+        nullable: false
+    export_order: 1
+
+  appointment_types:
+    include_base: true
+    mongo_collection: appointmenttypes
+    additional_columns:
+      - name: title
+        sql_type: VARCHAR(255)
+        nullable: false
+    export_order: 1
+
+  companies:
+    include_base: true
+    additional_columns:
+      - name: name
+        sql_type: VARCHAR(255)
+        nullable: false
+    export_order: 1
+
+  offers:
+    include_base: true
+    additional_columns:
+      - name: name
+        sql_type: VARCHAR(255)
+        nullable: false
+      - name: duration
+        sql_type: SMALLINT
+        nullable: false
+      - name: coaching_credit
+        sql_type: SMALLINT
+        nullable: false
+    export_order: 1
+
+  categories:
+    include_base: true
+    additional_columns:
+      - name: name
+        sql_type: VARCHAR(255)
+        nullable: false
+      - name: type
+        sql_type: VARCHAR(255)
+        nullable: false
+    export_order: 1
+
+  targets:
+    include_base: true
+    additional_columns:
+      - name: name
+        sql_type: VARCHAR(255)
+        nullable: false
+    export_order: 1
+
+  events:
+    include_base: true
+    additional_columns:
+      - name: name
+        sql_type: VARCHAR(255)
+        nullable: false
+      - name: type
+        sql_type: VARCHAR(255)
+        nullable: false
+      - name: start_date
+        sql_type: TIMESTAMP
+        nullable: false
+      - name: end_date
+        sql_type: TIMESTAMP
+        nullable: false
+      - name: company_id
+        sql_type: VARCHAR
+        foreign_key: companies(id)
+    additional_mappings:
+      company: company_id
+      __t: type
+    export_order: 2
+
+  users:
+    include_base: true
+    additional_columns:
+      - name: firstname
+        sql_type: VARCHAR(255)
+        nullable: false
+      - name: lastname
+        sql_type: VARCHAR(255)
+        nullable: false
+      - name: email
+        sql_type: VARCHAR(255)
+        nullable: false
+      - name: birthdate
+        sql_type: DATE
+      - name: company_id
+        sql_type: VARCHAR
+        foreign_key: companies(id)
+      - name: role
+        sql_type: VARCHAR(100)
+        nullable: false
+    additional_mappings:
+      company: company_id
+    export_order: 2
+
+  user_events:
+    mongo_collection: users
+    columns:
+      - name: user_id
+        sql_type: VARCHAR
+        nullable: false
+        foreign_key: users(id)
+      - name: event_id
+        sql_type: VARCHAR
+        nullable: false
+        foreign_key: events(id)
+      - name: created_at
+        sql_type: TIMESTAMP
+        nullable: false
+      - name: updated_at
+        sql_type: TIMESTAMP
+        nullable: false
+    explicit_mappings:
+      creation_date: created_at
+      update_date: updated_at
+    export_order: 3
+    import_strategy: user_events
+    unique_constraints:
+      - [user_id, event_id]
+
+  users_targets:
+    mongo_collection: users
+    columns:
+      - name: user_id
+        sql_type: VARCHAR
+        nullable: false
+        foreign_key: users(id)
+      - name: target_id
+        sql_type: VARCHAR
+        nullable: false
+        foreign_key: targets(id)
+      - name: type
+        sql_type: VARCHAR(50)
+        nullable: false
+      - name: created_at
+        sql_type: TIMESTAMP
+        nullable: false
+      - name: updated_at
+        sql_type: TIMESTAMP
+        nullable: false
+    explicit_mappings:
+      creation_date: created_at
+      update_date: updated_at
+    export_order: 3
+    import_strategy: users_targets
+    unique_constraints:
+      - [user_id, target_id, type]
+
+  messages:
+    include_base: true
+    additional_columns:
+      - name: sender_id
+        sql_type: VARCHAR
+        foreign_key: users(id)
+      - name: receiver_id
+        sql_type: VARCHAR
+        foreign_key: users(id)
+      - name: content
+        sql_type: TEXT
+        nullable: false
+    additional_mappings:
+      sender: sender_id
+      receiver: receiver_id
+    export_order: 3
+
+  coachings:
+    include_base: true
+    additional_columns:
+      - name: user_id
+        sql_type: VARCHAR
+        foreign_key: users(id)
+      - name: diet_id
+        sql_type: VARCHAR
+        foreign_key: users(id)
+      - name: offer_id
+        sql_type: VARCHAR
+        foreign_key: offers(id)
+      - name: status
+        sql_type: VARCHAR(100)
+        nullable: false
+    additional_mappings:
+      user: user_id
+      diet: diet_id
+      offer: offer_id
+    export_order: 3
+
+  users_logbook:
+    mongo_collection: coachinglogbooks
+    columns:
+      - name: id
+        sql_type: SERIAL
+        primary_key: true
+      - name: user_id
+        sql_type: VARCHAR
+        nullable: false
+        foreign_key: users(id)
+      - name: day
+        sql_type: DATE
+        nullable: false
+      - name: created_at
+        sql_type: TIMESTAMP
+        nullable: false
+      - name: updated_at
+        sql_type: TIMESTAMP
+        nullable: false
+    explicit_mappings:
+      user: user_id
+      creation_date: created_at
+      update_date: updated_at
+    export_order: 3
+    import_strategy: users_logbook
+    unique_constraints:
+      - [user_id, day]
+
+  appointments:
+    include_base: true
+    additional_columns:
+      - name: user_id
+        sql_type: VARCHAR
+        foreign_key: users(id)
+      - name: coaching_id
+        sql_type: VARCHAR
+        foreign_key: coachings(id)
+      - name: type_id
+        sql_type: VARCHAR
+        foreign_key: appointment_types(id)
+      - name: start_date
+        sql_type: DATE
+        nullable: false
+      - name: end_date
+        sql_type: DATE
+        nullable: false
+      - name: validated
+        sql_type: BOOLEAN
+      - name: order_nb
+        sql_type: SMALLINT
+        nullable: false
+    additional_mappings:
+      user: user_id
+      coaching: coaching_id
+      appointment_type: type_id
+      order: order_nb
+    export_order: 4
+
+  recipes:
+    include_base: true
+    additional_columns:
+      - name: name
+        sql_type: VARCHAR(255)
+        nullable: false
+    export_order: 1
+
+  menus:
+    include_base: true
+    additional_columns:
+      - name: name
+        sql_type: VARCHAR(255)
+        nullable: false
+    export_order: 2
+
+  menu_recipes:
+    mongo_collection: menu_recipes
+    columns:
+      - name: menu_id
+        sql_type: VARCHAR
+        nullable: false
+        foreign_key: menus(id)
+      - name: recipe_id
+        sql_type: VARCHAR
+        nullable: false
+        foreign_key: recipes(id)
+      - name: created_at
+        sql_type: TIMESTAMP
+        nullable: false
+      - name: updated_at
+        sql_type: TIMESTAMP
+        nullable: false
+    explicit_mappings:
+      creation_date: created_at
+      update_date: updated_at
+      menu: menu_id
+      recipe: recipe_id
+    export_order: 3
+    unique_constraints:
+      - [menu_id, recipe_id]

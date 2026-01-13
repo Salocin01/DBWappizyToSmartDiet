@@ -6,6 +6,7 @@ This project is a Python-based database migration tool that transfers data from 
 
 ```
 ├── config/                    # Configuration files
+│   └── schemas.yaml           # YAML schema source of truth
 ├── logs/                      # Application logs
 ├── sql_exports/               # SQL export files
 ├── src/
@@ -19,7 +20,7 @@ This project is a Python-based database migration tool that transfers data from 
 │   │   ├── strategies/            # Strategy implementations by domain
 │   │   └── import_summary.py      # Migration reporting
 │   ├── schemas/
-│   │   ├── schemas.py            # Table definitions and mappings
+│   │   ├── schemas.py            # YAML-driven schema loader
 │   │   └── table_schemas.py      # Base schema classes
 │   └── utils/                    # Utility modules
 └── tests/                     # Test files
@@ -409,6 +410,7 @@ Migration follows strict dependency order:
 dnspython==2.7.0
 psycopg2==2.9.10
 pymongo==4.11.1
+PyYAML==6.0.2
 python-dotenv==1.1.1
 ```
 
@@ -446,8 +448,8 @@ python -m pytest tests/
 ## Common Development Tasks
 
 ### Adding New Entity Migration
-1. Define schema in `src/schemas/schemas.py`
-2. Add to `create_schemas()` function with appropriate `export_order`
+1. Define schema in `config/schemas.yaml`
+2. Set `export_order` and any `import_strategy` name
 3. For complex data, create custom import strategy
 
 ### Modifying Import Logic

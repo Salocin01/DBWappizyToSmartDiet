@@ -522,7 +522,7 @@ class DirectTranslationStrategy(ImportStrategy):
     def get_documents(self, collection, config: ImportConfig, offset: int = 0):
         """Get documents for processing with pagination"""
         mongo_filter = ImportUtils.build_date_filter(config.after_date)
-        return list(collection.find(mongo_filter).skip(offset).limit(config.batch_size))
+        return list(collection.find(mongo_filter).sort('creation_date', 1).skip(offset).limit(config.batch_size))
     
     def extract_data_for_sql(self, document, config: ImportConfig):
         """Extract and prepare data from a single document for SQL insertion"""

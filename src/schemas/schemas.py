@@ -6,8 +6,18 @@ import yaml
 from .table_schemas import ColumnDefinition, BaseEntitySchema, TableSchema
 from src.migration.strategies.user_strategies import (
     create_user_events_strategy,
-    create_users_logbook_strategy,
     create_users_targets_strategy,
+)
+from src.migration.strategies.quiz_strategies import (
+    create_quizzs_links_questions_strategy,
+    create_users_quizzs_links_questions_strategy,
+)
+from src.migration.strategies.content_strategies import (
+    create_users_contents_reads_strategy,
+)
+from src.migration.strategies.coaching_strategies import (
+    create_days_contents_links_strategy,
+    create_days_logbooks_links_strategy,
 )
 
 DEFAULT_SCHEMA_PATH = os.path.abspath(
@@ -17,7 +27,11 @@ DEFAULT_SCHEMA_PATH = os.path.abspath(
 STRATEGY_FACTORIES = {
     "user_events": create_user_events_strategy,
     "users_targets": create_users_targets_strategy,
-    "users_logbook": create_users_logbook_strategy,
+    "quizzs_links_questions": create_quizzs_links_questions_strategy,
+    "users_quizzs_links_questions": create_users_quizzs_links_questions_strategy,
+    "users_contents_reads": create_users_contents_reads_strategy,
+    "days_contents_links": create_days_contents_links_strategy,
+    "days_logbooks_links": create_days_logbooks_links_strategy,
 }
 
 

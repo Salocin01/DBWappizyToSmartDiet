@@ -92,6 +92,12 @@ tables:
       - name: email
         sql_type: VARCHAR(255)
         nullable: false
+      - name: insurer
+        sql_type: VARCHAR(255)
+      - name: population
+        sql_type: VARCHAR(255)
+      - name: sso_id
+        sql_type: VARCHAR(255)
       - name: birthdate
         sql_type: DATE
       - name: company_id
@@ -195,12 +201,10 @@ tables:
       offer: offer_id
     export_order: 3
 
-  users_logbook:
+  users_logbooks:
+    include_base: true
     mongo_collection: coachinglogbooks
-    columns:
-      - name: id
-        sql_type: SERIAL
-        primary_key: true
+    additional_columns:
       - name: user_id
         sql_type: VARCHAR
         nullable: false
@@ -208,20 +212,39 @@ tables:
       - name: day
         sql_type: DATE
         nullable: false
-      - name: created_at
-        sql_type: TIMESTAMP
-        nullable: false
-      - name: updated_at
-        sql_type: TIMESTAMP
-        nullable: false
-    explicit_mappings:
+      - name: logbook_id
+        sql_type: VARCHAR
+        foreign_key: users_quizzs(id)
+      - name: coaching_id
+        sql_type: VARCHAR
+        nullable: true
+        foreign_key: coachings(id)
+    additional_mappings:
       user: user_id
-      creation_date: created_at
-      update_date: updated_at
+      logbook: logbook_id
+      coaching: coaching_id
     export_order: 3
-    import_strategy: users_logbook
-    unique_constraints:
-      - [user_id, day]
+
+  periods:
+    include_base: true
+    additional_columns:
+      - name: days_numbers
+        sql_type: SMALLINT
+        nullable: false
+      - name: coaching_id
+        sql_type: VARCHAR
+        foreign_key: coachings(id)
+      - name: order_nb
+        sql_type: SMALLINT
+        nullable: false
+      - name: status
+        sql_type: VARCHAR(100)
+        nullable: false
+    additional_mappings:
+      number_of_days: days_numbers
+      coaching: coaching_id
+      order: order_nb
+    export_order: 4
 
   appointments:
     include_base: true
@@ -252,6 +275,79 @@ tables:
       appointment_type: type_id
       order: order_nb
     export_order: 4
+
+  days:
+    include_base: true
+    additional_columns:
+      - name: period_id
+        sql_type: VARCHAR
+        nullable: false
+        foreign_key: periods(id)
+      - name: completed
+        sql_type: VARCHAR
+        nullable: false
+      - name: day
+        sql_type: DATE
+        nullable: false
+      - name: user_quizz_id
+        sql_type: VARCHAR
+        foreign_key: users_quizzs(id)
+    additional_mappings:
+      period: period_id
+      is_success: completed
+      date: day
+      userQuizz: user_quizz_id
+    export_order: 5
+
+  days_contents_links:
+    mongo_collection: days
+    columns:
+      - name: day_id
+        sql_type: VARCHAR
+        nullable: false
+        foreign_key: days(id)
+      - name: content_id
+        sql_type: VARCHAR
+        nullable: false
+        foreign_key: contents(id)
+      - name: created_at
+        sql_type: TIMESTAMP
+        nullable: false
+      - name: updated_at
+        sql_type: TIMESTAMP
+        nullable: false
+    explicit_mappings:
+      creation_date: created_at
+      update_date: updated_at
+    export_order: 6
+    import_strategy: days_contents_links
+    unique_constraints:
+      - [day_id, content_id]
+
+  days_logbooks_links:
+    mongo_collection: days
+    columns:
+      - name: day_id
+        sql_type: VARCHAR
+        nullable: false
+        foreign_key: days(id)
+      - name: logbook_id
+        sql_type: VARCHAR
+        nullable: false
+        foreign_key: users_quizzs(id)
+      - name: created_at
+        sql_type: TIMESTAMP
+        nullable: false
+      - name: updated_at
+        sql_type: TIMESTAMP
+        nullable: false
+    explicit_mappings:
+      creation_date: created_at
+      update_date: updated_at
+    export_order: 6
+    import_strategy: days_logbooks_links
+    unique_constraints:
+      - [day_id, logbook_id]
 
   recipes:
     include_base: true
@@ -294,3 +390,174 @@ tables:
     export_order: 3
     unique_constraints:
       - [menu_id, recipe_id]
+
+  quizzs:
+    include_base: true
+    additional_columns:
+      - name: name
+        sql_type: VARCHAR(255)
+        nullable: false
+      - name: type
+        sql_type: VARCHAR(255)
+        nullable: false
+    export_order: 1
+
+  quizzs_questions:
+    include_base: true
+    mongo_collection: quizzquestions
+    additional_columns:
+      - name: title
+        sql_type: VARCHAR
+        nullable: false
+      - name: type
+        sql_type: VARCHAR(255)
+        nullable: false
+    export_order: 1
+
+  quizzs_links_questions:
+    mongo_collection: quizzs
+    columns:
+      - name: quizz_id
+        sql_type: VARCHAR
+        nullable: false
+        foreign_key: quizzs(id)
+      - name: question_id
+        sql_type: VARCHAR
+        nullable: false
+        foreign_key: quizzs_questions(id)
+      - name: created_at
+        sql_type: TIMESTAMP
+        nullable: false
+      - name: updated_at
+        sql_type: TIMESTAMP
+        nullable: false
+    export_order: 2
+    import_strategy: quizzs_links_questions
+    unique_constraints:
+      - [quizz_id, question_id]
+
+  users_quizzs:
+    include_base: true
+    mongo_collection: userquizzs
+    additional_columns:
+      - name: quizz_id
+        sql_type: VARCHAR
+        foreign_key: quizzs(id)
+    additional_mappings:
+      quizz: quizz_id
+    export_order: 3
+
+  users_quizzs_questions:
+    include_base: true
+    mongo_collection: userquizzquestions
+    additional_columns:
+      - name: quizz_question_id
+        sql_type: VARCHAR
+        foreign_key: quizzs_questions(id)
+      - name: boolean_answer
+        sql_type: BOOLEAN
+        nullable: true
+      - name: document_answer
+        sql_type: VARCHAR
+        nullable: true
+      - name: single_enum_answer
+        sql_type: VARCHAR
+        nullable: true
+      - name: numeric_answer
+        sql_type: VARCHAR
+        nullable: true
+      - name: text_answer
+        sql_type: VARCHAR
+        nullable: true
+      - name: comment
+        sql_type: VARCHAR
+        nullable: true
+    additional_mappings:
+      quizz_question: quizz_question_id
+    export_order: 3
+
+  users_quizzs_links_questions:
+    mongo_collection: userquizzs
+    columns:
+      - name: user_quizz_id
+        sql_type: VARCHAR
+        nullable: false
+        foreign_key: users_quizzs(id)
+      - name: user_quizz_question_id
+        sql_type: VARCHAR
+        nullable: false
+        foreign_key: users_quizzs_questions(id)
+      - name: created_at
+        sql_type: TIMESTAMP
+        nullable: false
+      - name: updated_at
+        sql_type: TIMESTAMP
+        nullable: false
+    export_order: 4
+    import_strategy: users_quizzs_links_questions
+    unique_constraints:
+      - [user_quizz_id, user_quizz_question_id]
+
+  items:
+    include_base: true
+    additional_columns:
+      - name: text
+        sql_type: TEXT
+        nullable: false
+      - name: quizz_question_id
+        sql_type: VARCHAR
+        nullable: true
+        foreign_key: quizzs_questions(id)
+      - name: user_quizz_question_id
+        sql_type: VARCHAR
+        nullable: true
+        foreign_key: users_quizzs_questions(id)
+      - name: description
+        sql_type: TEXT
+        nullable: true
+      - name: picture
+        sql_type: VARCHAR
+        nullable: true
+      - name: updated_by
+        sql_type: VARCHAR
+        nullable: true
+    additional_mappings:
+      quizzQuestion: quizz_question_id
+      userQuizzQuestion: user_quizz_question_id
+    export_order: 4
+
+  contents:
+    include_base: true
+    additional_columns:
+      - name: name
+        sql_type: VARCHAR(255)
+        nullable: false
+      - name: type
+        sql_type: VARCHAR(100)
+        nullable: false
+    export_order: 1
+
+  users_contents_reads:
+    mongo_collection: contents
+    columns:
+      - name: content_id
+        sql_type: VARCHAR
+        nullable: false
+        foreign_key: contents(id)
+      - name: user_id
+        sql_type: VARCHAR
+        nullable: false
+        foreign_key: users(id)
+      - name: created_at
+        sql_type: TIMESTAMP
+        nullable: false
+      - name: updated_at
+        sql_type: TIMESTAMP
+        nullable: false
+    explicit_mappings:
+      creation_date: created_at
+      update_date: updated_at
+    export_order: 3
+    import_strategy: users_contents_reads
+    unique_constraints:
+      - [content_id, user_id]

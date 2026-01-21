@@ -15,9 +15,13 @@ This project is a Python-based database migration tool that transfers data from 
 │   │   └── postgres_connection.py # PostgreSQL connection setup
 │   ├── migration/
 │   │   ├── data_export.py         # Core data export logic
-│   │   ├── import_strategies.py   # Custom import strategies
+│   │   ├── import_strategies.py   # Base strategy classes and utilities
 │   │   ├── runner.py              # Migration orchestration entrypoint
 │   │   ├── strategies/            # Strategy implementations by domain
+│   │   │   ├── user_strategies.py     # User events and targets
+│   │   │   ├── quiz_strategies.py     # Quiz relationships
+│   │   │   ├── content_strategies.py  # Content read tracking
+│   │   │   └── coaching_strategies.py # Coaching days and links
 │   │   └── import_summary.py      # Migration reporting
 │   ├── schemas/
 │   │   ├── schemas.py            # YAML-driven schema loader
@@ -37,10 +41,12 @@ This project is a Python-based database migration tool that transfers data from 
 
 ### Database Schema
 The project migrates the following entities (in order):
-1. **Base entities**: ingredients, appointment_types, companies, offers, categories, targets, recipes
-2. **Users & Events**: events, users, menus
-3. **Relationships**: user_events, users_targets, messages, coachings, users_logbook, menu_recipes
-4. **Complex data**: appointments
+1. **Base entities**: ingredients, appointment_types, companies, offers, categories, targets, recipes, quizzs, quizzs_questions
+2. **Users & Events**: events, users, menus, quizzs_links_questions
+3. **Relationships**: user_events, users_targets, messages, coachings, users_logbook, menu_recipes, users_quizzs, users_quizzs_questions, items, contents, users_contents_reads
+4. **Complex data**: appointments, periods, users_quizzs_links_questions
+5. **Coaching days**: days
+6. **Day relationships**: days_contents_links, days_logbooks_links
 
 ### Special Features
 - **Array Extraction**: Handles MongoDB arrays as separate PostgreSQL tables
@@ -152,7 +158,12 @@ ImportStrategy (ABC)
 ├── ArrayExtractionStrategy
 └── DeleteAndInsertStrategy (Base class for relationships)
     ├── UserEventsStrategy
-    └── UsersTargetsStrategy
+    ├── UsersTargetsStrategy
+    ├── QuizzsLinksQuestionsStrategy
+    ├── UsersQuizzsLinksQuestionsStrategy
+    ├── UsersContentsReadsStrategy
+    ├── DaysContentsLinksStrategy
+    └── DaysLogbooksLinksStrategy
 ```
 
 **Benefits of this architecture:**
@@ -241,6 +252,11 @@ ON CONFLICT (user_id, event_id) DO UPDATE SET
 | ArrayExtractionStrategy | `ON CONFLICT (unique_constraint) DO UPDATE` | Timestamps updated (for separate collections like menu_recipes) |
 | UserEventsStrategy | Delete + Insert (no conflict clause) | Full relationship refresh per user |
 | UsersTargetsStrategy | Delete + Insert (no conflict clause) | Full relationship refresh per user |
+| QuizzsLinksQuestionsStrategy | Delete + Insert (no conflict clause) | Full relationship refresh per quiz |
+| UsersQuizzsLinksQuestionsStrategy | Delete + Insert (no conflict clause) | Full relationship refresh per user quiz |
+| UsersContentsReadsStrategy | Delete + Insert (no conflict clause) | Full relationship refresh per content |
+| DaysContentsLinksStrategy | Delete + Insert (no conflict clause) | Full relationship refresh per day |
+| DaysLogbooksLinksStrategy | Delete + Insert (no conflict clause) | Full relationship refresh per day |
 
 ### Users Targets Feature
 
@@ -389,20 +405,199 @@ This table provides a normalized view of which days each user has logbook entrie
 - Calculating user streaks or patterns
 - Efficient queries for "days with entries" without counting duplicate logbook records
 
+### Coaching Periods and Days Feature
+
+The coaching system tracks periods within a coaching program and individual days within those periods. This feature includes three tables that work together to manage coaching progress.
+
+#### Periods Table
+
+Represents distinct phases or periods within a coaching program.
+
+**MongoDB Structure (periods collection):**
+```javascript
+{
+  _id: ObjectId("..."),
+  number_of_days: 14,
+  coaching: ObjectId("64ef0616b99d86061670228a"),
+  order: 1,
+  status: "active",
+  creation_date: ISODate("2024-03-01T10:00:00Z"),
+  update_date: ISODate("2024-03-01T10:00:00Z")
+}
+```
+
+**PostgreSQL Structure:**
+```sql
+CREATE TABLE periods (
+  id VARCHAR PRIMARY KEY,
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  days_numbers SMALLINT NOT NULL,
+  coaching_id VARCHAR REFERENCES coachings(id),
+  order SMALLINT NOT NULL,
+  status VARCHAR(100) NOT NULL
+);
+```
+
+**Migration behavior:**
+- Uses DirectTranslationStrategy (standard 1:1 mapping)
+- `number_of_days` → `days_numbers` field mapping
+- `coaching` → `coaching_id` foreign key reference
+- Export order: 4 (after coachings at order 3)
+
+#### Days Table
+
+Represents individual days within coaching periods, tracking completion status and associated quizzes.
+
+**MongoDB Structure (days collection):**
+```javascript
+{
+  _id: ObjectId("..."),
+  period: ObjectId("65e8f2a1b99d86061670234a"),
+  is_success: true,
+  date: ISODate("2024-03-06T00:00:00Z"),
+  userQuizz: ObjectId("65eb4414a1a7f677042c3a62"),
+  contents: [ObjectId("content1"), ObjectId("content2")],
+  main_logbooks: [ObjectId("logbook1"), ObjectId("logbook2")],
+  creation_date: ISODate("2024-03-06T08:00:00Z"),
+  update_date: ISODate("2024-03-06T20:00:00Z")
+}
+```
+
+**PostgreSQL Structure:**
+```sql
+CREATE TABLE days (
+  id VARCHAR PRIMARY KEY,
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  period_id VARCHAR NOT NULL REFERENCES periods(id),
+  completed BOOLEAN NOT NULL,
+  day DATE NOT NULL,
+  user_quizz_id VARCHAR REFERENCES users_quizzs(id)
+);
+```
+
+**Key design decisions:**
+- `is_success` → `completed` (boolean field for day completion status)
+- `date` → `day` (DATE type for the specific day)
+- `period` → `period_id` foreign key to periods table
+- `userQuizz` → `user_quizz_id` optional foreign key to users_quizzs
+- Array fields (`contents`, `main_logbooks`) extracted to separate link tables
+
+**Migration behavior:**
+- Uses DirectTranslationStrategy with field mappings
+- Export order: 5 (after periods at order 4)
+
+#### Days Link Tables
+
+Two relationship tables extract array fields from the days collection:
+
+**1. days_contents_links**
+
+Tracks which educational contents are associated with each coaching day.
+
+**MongoDB Source:** `days.contents[]` array
+
+**PostgreSQL Structure:**
+```sql
+CREATE TABLE days_contents_links (
+  day_id VARCHAR NOT NULL REFERENCES days(id),
+  content_id VARCHAR NOT NULL REFERENCES contents(id),
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  UNIQUE(day_id, content_id)
+);
+```
+
+**2. days_logbooks_links**
+
+Tracks which main logbooks (user quizzes) are linked to each coaching day.
+
+**MongoDB Source:** `days.main_logbooks[]` array
+
+**PostgreSQL Structure:**
+```sql
+CREATE TABLE days_logbooks_links (
+  day_id VARCHAR NOT NULL REFERENCES days(id),
+  logbook_id VARCHAR NOT NULL REFERENCES users_quizzs(id),
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  UNIQUE(day_id, logbook_id)
+);
+```
+
+#### Custom Import Strategies
+
+Both link tables use custom `DeleteAndInsertStrategy` implementations defined in `src/migration/strategies/coaching_strategies.py`:
+
+**DaysContentsLinksStrategy:**
+- Queries days documents with non-empty `contents` array
+- Extracts day-content relationships
+- Uses delete-and-insert pattern keyed on `day_id`
+- Handles both ObjectId and embedded document formats
+
+**DaysLogbooksLinksStrategy:**
+- Queries days documents with non-empty `main_logbooks` array
+- Extracts day-logbook relationships
+- Uses delete-and-insert pattern keyed on `day_id`
+- Handles both ObjectId and embedded document formats
+
+#### Incremental Sync Behavior
+
+**Days table:**
+- Standard incremental sync based on creation_date/update_date
+- Updates all fields when document changes
+
+**Link tables:**
+1. **Query**: Find days with array changes after `after_date`
+2. **Delete**: Remove ALL existing links for changed days
+3. **Insert**: Insert fresh relationships from current array state
+4. **Benefit**: Correctly handles both additions and removals from arrays
+
+**Why delete-and-insert for link tables?**
+- When content/logbook is removed from a day's array in MongoDB, it disappears from the document
+- Upsert strategies can't detect these removals
+- Delete-and-insert ensures PostgreSQL perfectly mirrors MongoDB's current state
+
+#### Use Cases
+
+**Periods:**
+- Track distinct phases in coaching programs (e.g., "Week 1", "Month 1")
+- Organize coaching timeline into manageable segments
+- Monitor period completion and status
+
+**Days:**
+- Track daily progress within coaching periods
+- Record completion status for each day
+- Link specific quizzes/assessments to individual days
+- Provide granular coaching progress tracking
+
+**Link tables:**
+- Associate educational content with specific coaching days
+- Link logbook entries/quizzes to days for tracking
+- Enable queries like "what content was viewed on this day?"
+- Support analytics on content engagement within coaching programs
+
 ### Export Order & Dependencies
 Migration follows strict dependency order:
 
 1. **Order 1**: Base entities (no dependencies)
-   - `ingredients`, `appointment_types`, `companies`, `offers`, `categories`, `targets`, `recipes`
+   - `ingredients`, `appointment_types`, `companies`, `offers`, `categories`, `targets`, `recipes`, `quizzs`, `quizzs_questions`, `contents`
 
 2. **Order 2**: Core entities with simple foreign keys
-   - `events`, `users`, `menus`
+   - `events`, `users`, `menus`, `quizzs_links_questions`
 
-3. **Order 3**: Relationship tables and arrays
-   - `user_events`, `users_targets`, `messages`, `coachings`, `users_logbook`, `menu_recipes`
+3. **Order 3**: Relationship tables and core arrays
+   - `user_events`, `users_targets`, `messages`, `coachings`, `users_logbook`, `menu_recipes`, `users_quizzs`, `users_quizzs_questions`, `users_contents_reads`
 
 4. **Order 4**: Complex dependent data
-   - `appointments`
+   - `appointments`, `periods`, `items`, `users_quizzs_links_questions`
+
+5. **Order 5**: Coaching days
+   - `days`
+
+6. **Order 6**: Day relationship arrays
+   - `days_contents_links`, `days_logbooks_links`
 
 ## Dependencies
 
@@ -412,14 +607,85 @@ psycopg2==2.9.10
 pymongo==4.11.1
 PyYAML==6.0.2
 python-dotenv==1.1.1
+sshtunnel==0.4.0
+paramiko==3.4.0
 ```
 
 ## Configuration
 
-The project uses environment variables for database connections:
+### Transfer Mode Configuration
+
+The migration tool supports flexible source and destination configuration through environment variables:
+
+**Transfer Direction Settings:**
+- `TRANSFER_SOURCE` - Where to read MongoDB data from: `"local"` (default) or `"remote"`
+- `TRANSFER_DESTINATION` - Where to write PostgreSQL data to: `"local"` (default) or `"remote"`
+
+**Common Transfer Scenarios:**
+
+1. **Local → Local** (Default, Development)
+   ```bash
+   TRANSFER_SOURCE=local
+   TRANSFER_DESTINATION=local
+   ```
+   - Reads from local MongoDB (MONGODB_URL)
+   - Writes to local PostgreSQL (POSTGRES_*)
+
+2. **Local → Remote** (Push local data to production)
+   ```bash
+   TRANSFER_SOURCE=local
+   TRANSFER_DESTINATION=remote
+   ```
+   - Reads from local MongoDB
+   - Writes to production PostgreSQL via SSH tunnel
+
+3. **Remote → Local** (Pull production data locally)
+   ```bash
+   TRANSFER_SOURCE=remote
+   TRANSFER_DESTINATION=local
+   ```
+   - Reads from production MongoDB via SSH tunnel
+   - Writes to local PostgreSQL
+
+4. **Remote → Remote** (Production migration)
+   ```bash
+   TRANSFER_SOURCE=remote
+   TRANSFER_DESTINATION=remote
+   ```
+   - Reads from production MongoDB via SSH tunnel
+   - Writes to production PostgreSQL via SSH tunnel
+
+### SSH Tunnel Configuration
+
+When using `remote` mode, the system automatically establishes SSH tunnels using these credentials:
+
+**SSH Server:**
+- `REMOTE_SERVER_URL` - Remote server IP/hostname
+- `REMOTE_SERVER_USER` - SSH username
+- `REMOTE_SERVER_PASSWORD` - SSH password
+
+**Remote MongoDB (when TRANSFER_SOURCE=remote):**
+- `REMOTE_MONGODB_URL` - MongoDB URL on remote server (typically mongodb://localhost:27017)
+- `REMOTE_MONGODB_DATABASE` - Remote MongoDB database name
+
+**Remote PostgreSQL (when TRANSFER_DESTINATION=remote):**
+- `REMOTE_POSTGRES_PORT` - PostgreSQL port on remote server (default: 5432)
+- `REMOTE_POSTGRES_DATABASE` - Remote PostgreSQL database name
+- `REMOTE_POSTGRES_USER` - Remote PostgreSQL username
+- `REMOTE_POSTGRES_PASSWORD` - Remote PostgreSQL password
+
+### Local Database Configuration
+
+**Local MongoDB:**
 - `MONGODB_URL` - MongoDB connection string (default: mongodb://localhost:27017)
 - `MONGODB_DATABASE` - MongoDB database name (default: default)
-- PostgreSQL connection variables (configured in postgres_connection.py)
+
+**Local PostgreSQL:**
+- `POSTGRES_HOST` - PostgreSQL host (default: localhost)
+- `POSTGRES_PORT` - PostgreSQL port (default: 5432)
+- `POSTGRES_DATABASE` - PostgreSQL database name
+- `POSTGRES_USER` - PostgreSQL username
+- `POSTGRES_PASSWORD` - PostgreSQL password
 
 ## Usage
 
@@ -455,7 +721,11 @@ python -m pytest tests/
 ### Modifying Import Logic
 - Edit `src/migration/data_export.py` for core export logic
 - Add custom strategies in `src/migration/strategies/` and reference them from schemas
-- User-focused strategies live in `src/migration/strategies/user_strategies.py`
+- Strategy organization by domain:
+  - `user_strategies.py` - User-focused strategies (user_events, users_targets)
+  - `quiz_strategies.py` - Quiz-focused strategies (quizzs_links_questions, users_quizzs_links_questions)
+  - `content_strategies.py` - Content-focused strategies (users_contents_reads)
+  - `coaching_strategies.py` - Coaching-focused strategies (days_contents_links, days_logbooks_links)
 
 ### Database Connection Issues
 - Check environment variables in `.env` file

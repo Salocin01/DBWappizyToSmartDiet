@@ -19,7 +19,7 @@ def create_user_events_strategy():
             return list(collection.find(
                 mongo_filter,
                 {'_id': 1, 'registered_events': 1, 'creation_date': 1, 'update_date': 1}
-            ).skip(offset).limit(config.batch_size))
+            ).sort('creation_date', 1).skip(offset).limit(config.batch_size))
 
         def extract_data_for_sql(self, document, config: ImportConfig):
             """Extract all registered events from a user document"""
@@ -70,25 +70,6 @@ def create_user_events_strategy():
     return UserEventsStrategy()
 
 
-def create_users_logbook_strategy():
-    """Create strategy for users_logbook with user field filter"""
-
-    class UsersLogbookStrategy(DirectTranslationStrategy):
-        def count_total_documents(self, collection, config: ImportConfig) -> int:
-            """Count documents that have a user field (not None)"""
-            mongo_filter = {'user': {'$exists': True, '$ne': None}}
-            mongo_filter.update(ImportUtils.build_date_filter(config.after_date))
-            return collection.count_documents(mongo_filter)
-
-        def get_documents(self, collection, config: ImportConfig, offset: int = 0):
-            """Get documents with user field"""
-            mongo_filter = {'user': {'$exists': True, '$ne': None}}
-            mongo_filter.update(ImportUtils.build_date_filter(config.after_date))
-            return list(collection.find(mongo_filter).skip(offset).limit(config.batch_size))
-
-    return UsersLogbookStrategy()
-
-
 def create_users_targets_strategy():
     """Create strategy for users_targets array extraction from multiple target fields"""
 
@@ -115,7 +96,7 @@ def create_users_targets_strategy():
             return list(collection.find(
                 mongo_filter,
                 {'_id': 1, 'targets': 1, 'specificity_targets': 1, 'health_targets': 1, 'creation_date': 1, 'update_date': 1}
-            ).skip(offset).limit(config.batch_size))
+            ).sort('creation_date', 1).skip(offset).limit(config.batch_size))
 
         def extract_data_for_sql(self, document, config: ImportConfig):
             """Extract all target relationships from a user document"""

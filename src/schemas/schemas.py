@@ -66,6 +66,8 @@ def load_schemas(schema_path: str = DEFAULT_SCHEMA_PATH) -> Dict[str, TableSchem
         mongo_collection = config.get("mongo_collection")
         export_order = config.get("export_order", 0)
         strategy = _resolve_strategy(config.get("import_strategy"))
+        force_reimport = config.get("force_reimport", False)
+        truncate_before_import = config.get("truncate_before_import", False)
 
         if include_base:
             additional_columns = _build_column_definitions(config.get("additional_columns", []))
@@ -77,6 +79,8 @@ def load_schemas(schema_path: str = DEFAULT_SCHEMA_PATH) -> Dict[str, TableSchem
                 additional_mappings=additional_mappings,
                 export_order=export_order,
                 import_strategy=strategy,
+                force_reimport=force_reimport,
+                truncate_before_import=truncate_before_import,
             )
         else:
             columns = _build_column_definitions(config.get("columns", []))
@@ -88,6 +92,8 @@ def load_schemas(schema_path: str = DEFAULT_SCHEMA_PATH) -> Dict[str, TableSchem
                 export_order=export_order,
                 import_strategy=strategy,
                 unique_constraints=config.get("unique_constraints"),
+                force_reimport=force_reimport,
+                truncate_before_import=truncate_before_import,
             )
 
         if schema.name is None:

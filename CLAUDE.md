@@ -258,6 +258,141 @@ ON CONFLICT (user_id, event_id) DO UPDATE SET
 | DaysContentsLinksStrategy | Delete + Insert (no conflict clause) | Full relationship refresh per day |
 | DaysLogbooksLinksStrategy | Delete + Insert (no conflict clause) | Full relationship refresh per day |
 
+### Force Reimport Feature
+
+The migration system supports forcing a complete reimport of specific tables when needed, particularly useful when table structures change or data needs to be completely refreshed.
+
+#### Configuration Flags
+
+Two boolean flags can be set per table in `config/schemas.yaml`:
+
+**1. `force_reimport`** (boolean, default: `false`)
+- When `true`, bypasses incremental migration logic
+- Forces a full reimport of all data from MongoDB regardless of timestamps
+- Ignores the last migration date from PostgreSQL
+- Useful when you need to re-sync all data without changing the table structure
+
+**2. `truncate_before_import`** (boolean, default: `false`)
+- When `true`, truncates (clears) the PostgreSQL table before import
+- Uses `TRUNCATE TABLE {table_name} CASCADE` to remove all existing data
+- **Must be used with `force_reimport: true`** (only effective when force reimport is enabled)
+- Useful when the table structure has changed and you need a clean slate
+
+#### When to Use
+
+**Use `force_reimport: true` when:**
+- You need to re-sync all data from MongoDB to PostgreSQL
+- Data in PostgreSQL may have been manually modified and needs to be restored
+- You want to ensure PostgreSQL exactly matches MongoDB state
+- Testing or debugging migration logic changes
+
+**Use `truncate_before_import: true` when:**
+- The table structure (columns, types, constraints) has changed
+- You need to remove orphaned or incorrect data that can't be updated
+- Starting fresh is cleaner than trying to merge old and new data
+- The table has structural issues that prevent normal upsert operations
+
+#### YAML Configuration Examples
+
+**Example 1: Force reimport with upsert (preserve existing structure)**
+```yaml
+users:
+  include_base: true
+  additional_columns:
+    - name: firstname
+      sql_type: VARCHAR(255)
+      nullable: false
+    - name: lastname
+      sql_type: VARCHAR(255)
+      nullable: false
+  export_order: 2
+  force_reimport: true  # Force full reimport, but use upsert logic
+```
+
+**Example 2: Force reimport with truncate (clean slate)**
+```yaml
+days_contents_links:
+  mongo_collection: days
+  columns:
+    - name: day_id
+      sql_type: VARCHAR
+      nullable: false
+      foreign_key: days(id)
+    - name: content_id
+      sql_type: VARCHAR
+      nullable: false
+      foreign_key: contents(id)
+  export_order: 6
+  import_strategy: days_contents_links
+  force_reimport: true           # Force full reimport
+  truncate_before_import: true   # Clear table first
+```
+
+#### Migration Behavior
+
+**Normal incremental migration:**
+```
+📅 Step 1: Last migration date: 2024-03-15 10:30:00
+   → Will import records created or updated after this date
+```
+
+**With `force_reimport: true` only:**
+```
+🔄 FORCE REIMPORT enabled for this table
+   → Will perform full reimport from MongoDB
+```
+
+**With `force_reimport: true` and `truncate_before_import: true`:**
+```
+🔄 FORCE REIMPORT enabled for this table
+⚠️  TRUNCATE enabled - clearing all existing data
+   → Table days_contents_links truncated successfully
+   → Will perform full reimport from MongoDB
+```
+
+#### Important Notes
+
+- **Temporary setting**: These flags should typically be set temporarily and removed after the forced reimport completes
+- **CASCADE deletion**: `TRUNCATE TABLE ... CASCADE` will also truncate dependent tables if foreign keys exist
+- **Performance**: Force reimport processes all MongoDB documents, which can be slow for large collections
+- **No rollback**: Truncate operations cannot be rolled back in most PostgreSQL configurations
+- **Testing recommended**: Test force reimport on development environment before running on production
+
+#### Workflow Example
+
+When you change a table structure:
+
+1. **Update schema definition** in `config/schemas.yaml`:
+   ```yaml
+   days:
+     include_base: true
+     additional_columns:
+       - name: new_column  # Added new column
+         sql_type: VARCHAR(100)
+     export_order: 5
+     force_reimport: true           # Add this temporarily
+     truncate_before_import: true   # Add this temporarily
+   ```
+
+2. **Run migration**:
+   ```bash
+   python transfert_data.py
+   ```
+
+3. **Verify results** and **remove flags**:
+   ```yaml
+   days:
+     include_base: true
+     additional_columns:
+       - name: new_column
+         sql_type: VARCHAR(100)
+     export_order: 5
+     # force_reimport: true           ← Remove after successful import
+     # truncate_before_import: true   ← Remove after successful import
+   ```
+
+4. **Commit the schema changes** (without the force flags) to version control
+
 ### Users Targets Feature
 
 The `users_targets` table represents a many-to-many relationship between users and their health/wellness targets. Unlike simple array extraction, this feature consolidates three different MongoDB arrays into a single normalized table.

@@ -18,12 +18,15 @@ class TableSchema:
     export_order: int = 0
     import_strategy: Optional[Any] = None
     unique_constraints: Optional[List[List[str]]] = None
+    force_reimport: bool = False
+    truncate_before_import: bool = False
     
     @classmethod
     def create(cls, columns: List[ColumnDefinition], name: Optional[str] = None,
-               mongo_collection: Optional[str] = None, explicit_mappings: Optional[Dict[str, str]] = None, 
-               export_order: int = 0, import_strategy: Optional[Any] = None, 
-               unique_constraints: Optional[List[List[str]]] = None) -> 'TableSchema':
+               mongo_collection: Optional[str] = None, explicit_mappings: Optional[Dict[str, str]] = None,
+               export_order: int = 0, import_strategy: Optional[Any] = None,
+               unique_constraints: Optional[List[List[str]]] = None,
+               force_reimport: bool = False, truncate_before_import: bool = False) -> 'TableSchema':
         """Create a TableSchema with auto-generated field mappings.
         
         Args:
@@ -47,8 +50,9 @@ class TableSchema:
         # Override with explicit mappings if provided
         if explicit_mappings:
             field_mappings.update(explicit_mappings)
-            
-        return cls(name, mongo_collection, columns, field_mappings, export_order, import_strategy, unique_constraints)
+
+        return cls(name, mongo_collection, columns, field_mappings, export_order, import_strategy,
+                   unique_constraints, force_reimport, truncate_before_import)
     
     def get_create_sql(self) -> str:
         column_defs = []
@@ -152,10 +156,11 @@ class BaseEntitySchema:
         }
     
     @classmethod
-    def create_with_base(cls, additional_columns: List[ColumnDefinition] = None, 
+    def create_with_base(cls, additional_columns: List[ColumnDefinition] = None,
                         name: Optional[str] = None, mongo_collection: Optional[str] = None,
-                        additional_mappings: Optional[Dict[str, str]] = None, 
-                        export_order: int = 0, import_strategy: Optional[Any] = None) -> TableSchema:
+                        additional_mappings: Optional[Dict[str, str]] = None,
+                        export_order: int = 0, import_strategy: Optional[Any] = None,
+                        force_reimport: bool = False, truncate_before_import: bool = False) -> TableSchema:
         """Create a TableSchema with base columns and mappings plus additional ones.
         
         Args:
@@ -175,13 +180,15 @@ class BaseEntitySchema:
         explicit_mappings = cls.get_base_mappings()
         if additional_mappings:
             explicit_mappings.update(additional_mappings)
-        
+
         return TableSchema.create(
             columns=columns,
             name=name,
             mongo_collection=mongo_collection,
             explicit_mappings=explicit_mappings,
             export_order=export_order,
-            import_strategy=import_strategy
+            import_strategy=import_strategy,
+            force_reimport=force_reimport,
+            truncate_before_import=truncate_before_import
         )
 

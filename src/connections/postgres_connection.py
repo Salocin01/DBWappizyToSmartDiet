@@ -109,19 +109,59 @@ def close_postgres_connection():
 def setup_tables(conn):
     try:
         from src.schemas.schemas import TABLE_SCHEMAS
-        
+        from src.schemas.schema_comparator import compare_table_schema, prompt_and_apply_updates
+
         cursor = conn.cursor()
         print("PostgreSQL connected")
-        
+
+        # Track all schema updates needed
+        all_updates = {}
+
         # Sort tables by export_order, same as data import
         sorted_tables = sorted(TABLE_SCHEMAS.items(), key=lambda x: x[1].export_order)
-        
+
         for table_name, schema in sorted_tables:
-            cursor.execute(schema.get_create_sql())
-            print(f"✅ Table {table_name} created/verified")
-        
+            # Check if table exists
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables
+                    WHERE table_schema = 'public'
+                        AND table_name = %s
+                )
+            """, (table_name,))
+            table_exists = cursor.fetchone()[0]
+
+            if not table_exists:
+                # Create new table
+                cursor.execute(schema.get_create_sql())
+                print(f"✅ Table {table_name} created")
+            else:
+                # Compare and detect differences
+                differences = compare_table_schema(schema, conn, table_name)
+
+                if differences['status'] == 'needs_update':
+                    all_updates[table_name] = {
+                        'schema': schema,
+                        'differences': differences
+                    }
+                    print(f"⚠️  Table {table_name} needs schema update")
+                elif differences['status'] == 'error':
+                    all_updates[table_name] = {
+                        'schema': schema,
+                        'differences': differences
+                    }
+                    print(f"❌ Table {table_name} has schema conflicts")
+                else:
+                    print(f"✅ Table {table_name} schema up to date")
+
         conn.commit()
-        print("All tables created")
+
+        # If updates needed, show diff and ask confirmation
+        if all_updates:
+            print(f"\n📊 Found schema differences in {len(all_updates)} table(s)")
+            return prompt_and_apply_updates(conn, all_updates)
+
+        print("All tables created/verified")
         return conn
     except psycopg2.OperationalError as e:
         print(f"ERROR: {e}")

@@ -21,14 +21,32 @@ def run_migration():
             collection = get_mongo_collection(schema.mongo_collection)
             entity_summary = ImportSummary()
 
-            # STEP 1: Get Last Migration Date from PostgreSQL
-            after_date = get_last_insert_date(conn, table_name)
-            if after_date:
-                print(f"📅 Step 1: Last migration date: {after_date}")
-                print("   → Will import records created or updated after this date")
+            # Check for forced reimport
+            if schema.force_reimport:
+                print("🔄 FORCE REIMPORT enabled for this table")
+                if schema.truncate_before_import:
+                    print("⚠️  TRUNCATE enabled - clearing all existing data")
+                    cursor = conn.cursor()
+                    try:
+                        cursor.execute(f"TRUNCATE TABLE {table_name} CASCADE")
+                        conn.commit()
+                        print(f"   → Table {table_name} truncated successfully")
+                    except Exception as e:
+                        print(f"   ⚠️ Error truncating table: {e}")
+                        conn.rollback()
+                    finally:
+                        cursor.close()
+                after_date = None
+                print("   → Will perform full reimport from MongoDB")
             else:
-                print("📅 Step 1: No existing records found")
-                print("   → Will perform full import")
+                # STEP 1: Get Last Migration Date from PostgreSQL
+                after_date = get_last_insert_date(conn, table_name)
+                if after_date:
+                    print(f"📅 Step 1: Last migration date: {after_date}")
+                    print("   → Will import records created or updated after this date")
+                else:
+                    print("📅 Step 1: No existing records found")
+                    print("   → Will perform full import")
 
             # STEP 2-4: Strategy handles fetching, transforming, and importing
             export_table_data(

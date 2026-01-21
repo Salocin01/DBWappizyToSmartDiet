@@ -192,6 +192,9 @@ tables:
       - name: offer_id
         sql_type: VARCHAR
         foreign_key: offers(id)
+      - name: assessment_id
+        sql_type: VARCHAR
+        foreign_key: users_quizzs(id)
       - name: status
         sql_type: VARCHAR(100)
         nullable: false
@@ -199,6 +202,7 @@ tables:
       user: user_id
       diet: diet_id
       offer: offer_id
+      assessment_quizz: assessment_id
     export_order: 3
 
   users_logbooks:
@@ -445,7 +449,7 @@ tables:
         foreign_key: quizzs(id)
     additional_mappings:
       quizz: quizz_id
-    export_order: 3
+    export_order: 2
 
   users_quizzs_questions:
     include_base: true

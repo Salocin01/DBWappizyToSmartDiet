@@ -1,6 +1,7 @@
 dnspython==2.7.0
 psycopg2==2.9.10
 pymongo==4.11.1
+PyMySQL==1.1.0
 python-dotenv==1.1.1
 PyYAML==6.0.2
 sshtunnel==0.4.0

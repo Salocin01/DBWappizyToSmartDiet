@@ -6,17 +6,20 @@ This project is a Python-based database migration tool that transfers data from 
 
 ```
 ├── config/                    # Configuration files
-│   └── schemas.yaml           # YAML schema source of truth
+│   ├── schemas.yaml           # YAML schema source of truth (MongoDB)
+│   └── matomo_schemas.yaml    # YAML schema for Matomo tables
 ├── logs/                      # Application logs
 ├── sql_exports/               # SQL export files
 ├── src/
 │   ├── connections/
 │   │   ├── mongo_connection.py    # MongoDB connection singleton
-│   │   └── postgres_connection.py # PostgreSQL connection setup
+│   │   ├── postgres_connection.py # PostgreSQL connection setup
+│   │   └── mariadb_connection.py  # MariaDB connection for Matomo
 │   ├── migration/
 │   │   ├── data_export.py         # Core data export logic
 │   │   ├── import_strategies.py   # Base strategy classes and utilities
 │   │   ├── runner.py              # Migration orchestration entrypoint
+│   │   ├── matomo_sync.py         # Matomo analytics sync logic
 │   │   ├── strategies/            # Strategy implementations by domain
 │   │   │   ├── user_strategies.py     # User events and targets
 │   │   │   ├── quiz_strategies.py     # Quiz relationships
@@ -35,6 +38,8 @@ This project is a Python-based database migration tool that transfers data from 
 ### Main Scripts
 - `transfert_data.py` - CLI entrypoint that invokes the migration runner
 - `src/migration/runner.py` - Main migration orchestration (iterates schemas, runs strategies)
+- `sync_matomo_data.py` - Matomo analytics data synchronization from MariaDB to PostgreSQL
+- `src/migration/matomo_sync.py` - Matomo sync logic and table management
 - `refresh_mongo_db.py` - MongoDB database refresh utility
 - `refresh_postgres_db.py` - PostgreSQL database refresh utility
 - `check_db_differences.py` - Database comparison tool
@@ -713,6 +718,129 @@ Both link tables use custom `DeleteAndInsertStrategy` implementations defined in
 - Enable queries like "what content was viewed on this day?"
 - Support analytics on content engagement within coaching programs
 
+## Matomo Analytics Synchronization
+
+The project includes a separate synchronization system for Matomo analytics data stored in MariaDB. This allows combining user analytics with application data in a unified PostgreSQL database.
+
+### Overview
+
+Unlike the MongoDB to PostgreSQL migration system, Matomo sync is a standalone process that:
+- Reads analytics data from Matomo's MariaDB database
+- Transforms and loads it into PostgreSQL tables
+- Supports incremental updates based on timestamps
+- Operates independently from the main MongoDB migration
+
+### Matomo Tables
+
+The system synchronizes two core Matomo tracking tables:
+
+#### matomo_log_visit
+
+Stores visitor session data including:
+- Visit identification (`idvisit`, `idvisitor`, `idsite`)
+- Session timestamps (`visit_first_action_time`, `visit_last_action_time`)
+- User information (`user_id`, `visitor_returning`, `visitor_count_visits`)
+- Visit metrics (`visit_total_actions`, `visit_total_interactions`, `visit_total_searches`)
+- Referrer information (`referer_type`, `referer_name`, `referer_url`, `referer_keyword`)
+- Technical details (`config_os`, `config_browser_name`, `config_browser_version`)
+- Geographic data (`location_country`, `location_city`, `location_latitude`, `location_longitude`)
+
+**Primary Key:** `idvisit` (BIGINT)
+
+**Incremental Sync Column:** `visit_last_action_time` (TIMESTAMP)
+
+#### matomo_log_link_visit_action
+
+Stores individual page views and user actions including:
+- Action identification (`idlink_va`, `idvisit`, `idvisitor`, `idsite`)
+- Page tracking (`idaction_url`, `idaction_name`, `idpageview`)
+- Referrers (`idaction_url_ref`, `idaction_name_ref`)
+- Time tracking (`server_time`, `time_spent_ref_action`, `interaction_position`)
+- Custom variables (`custom_var_k1-5`, `custom_var_v1-5`, `custom_float`)
+
+**Primary Key:** `idlink_va` (BIGINT)
+
+**Incremental Sync Column:** `server_time` (TIMESTAMP)
+
+### Data Type Conversions
+
+The synchronization handles MariaDB to PostgreSQL type conversions:
+
+| MariaDB Type | PostgreSQL Type | Notes |
+|--------------|-----------------|-------|
+| BIGINT | BIGINT | Direct mapping |
+| INT | INTEGER | Direct mapping |
+| BINARY/VARBINARY | BYTEA | Uses psycopg2.Binary() for conversion |
+| VARCHAR | VARCHAR | Direct mapping with length preserved |
+| TEXT | TEXT | Direct mapping |
+| DATETIME/TIMESTAMP | TIMESTAMP | Direct mapping |
+| DECIMAL | DECIMAL | Precision preserved |
+| DOUBLE | DOUBLE PRECISION | Direct mapping |
+
+### Sync Strategy
+
+**Incremental Update Pattern:**
+1. Query PostgreSQL for the maximum timestamp in the table
+2. Query MariaDB for records with timestamps greater than the last sync
+3. Insert/update records using `ON CONFLICT DO UPDATE` on primary key
+4. All columns are updated on conflict (upsert behavior)
+
+**Benefits:**
+- Only fetches new/updated analytics data since last sync
+- Efficient for large historical datasets
+- Idempotent - can be run multiple times safely
+- No data loss on repeated runs
+
+**Batch Processing:**
+- Default batch size: 5,000 rows
+- Uses `psycopg2.extras.execute_batch()` for efficiency
+- Automatic error handling with individual row retry on batch failure
+- Progress tracking with real-time console output
+
+### Configuration
+
+Matomo sync uses separate environment variables from the main MongoDB migration:
+
+**Source Control:**
+- `MATOMO_SOURCE=local` or `remote` (default: local)
+- When `remote`, uses SSH tunnel with same credentials as MongoDB/PostgreSQL
+
+**Connection Settings:**
+- Local: `MATOMO_HOST`, `MATOMO_PORT`, `MATOMO_DATABASE`, `MATOMO_USER`, `MATOMO_PASSWORD`
+- PostgreSQL destination uses same configuration as main migration
+
+### Running Matomo Sync
+
+```bash
+# Sync Matomo data from MariaDB to PostgreSQL
+python sync_matomo_data.py
+```
+
+The sync process:
+1. Loads table schemas from `config/matomo_schemas.yaml`
+2. Connects to MariaDB (local or remote via SSH tunnel)
+3. Connects to PostgreSQL (local or remote via SSH tunnel)
+4. Creates tables if they don't exist
+5. Performs incremental sync for each table
+6. Reports sync statistics and any errors
+
+### Use Cases
+
+**Combined Analytics:**
+- Join Matomo visit data with user accounts for engagement analysis
+- Track user behavior across coaching programs
+- Correlate page views with quiz completions or content consumption
+
+**Unified Reporting:**
+- Single PostgreSQL database for all application and analytics data
+- Simplified reporting without cross-database queries
+- Consistent backup and replication strategy
+
+**Data Warehouse:**
+- Consolidate multiple data sources into PostgreSQL
+- Enable advanced analytics with tools like Metabase, Tableau, or custom dashboards
+- Historical trend analysis with time-series queries
+
 ### Export Order & Dependencies
 Migration follows strict dependency order:
 
@@ -740,6 +868,7 @@ Migration follows strict dependency order:
 dnspython==2.7.0
 psycopg2==2.9.10
 pymongo==4.11.1
+PyMySQL==1.1.0
 PyYAML==6.0.2
 python-dotenv==1.1.1
 sshtunnel==0.4.0
@@ -822,11 +951,43 @@ When using `remote` mode, the system automatically establishes SSH tunnels using
 - `POSTGRES_USER` - PostgreSQL username
 - `POSTGRES_PASSWORD` - PostgreSQL password
 
+### Matomo Analytics Configuration
+
+The tool supports synchronizing Matomo analytics data from MariaDB to PostgreSQL for unified analytics and reporting.
+
+**Matomo Source Configuration:**
+- `MATOMO_SOURCE` - Where to read Matomo data from: `"local"` (default) or `"remote"`
+- `MATOMO_HOST` - MariaDB host (default: localhost)
+- `MATOMO_PORT` - MariaDB port (default: 3306)
+- `MATOMO_DATABASE` - Matomo database name (default: matomo)
+- `MATOMO_USER` - MariaDB username (default: root)
+- `MATOMO_PASSWORD` - MariaDB password
+
+**Remote Matomo (when MATOMO_SOURCE=remote):**
+- Uses the same SSH tunnel configuration as MongoDB/PostgreSQL (REMOTE_SERVER_*)
+- Connects to remote MariaDB via SSH tunnel
+- Useful for syncing production Matomo data to local PostgreSQL for analysis
+
+**Synced Tables:**
+- `matomo_log_visit` - Visitor session tracking data
+- `matomo_log_link_visit_action` - Individual page views and user actions
+
+**Sync Behavior:**
+- Incremental sync based on timestamps (visit_last_action_time, server_time)
+- Uses ON CONFLICT DO UPDATE for automatic upserts
+- Handles binary data conversion (BLOB → BYTEA)
+- Batch processing for efficient large dataset handling
+
 ## Usage
 
 ### Full Migration
 ```bash
 python transfert_data.py
+```
+
+### Matomo Analytics Sync
+```bash
+python sync_matomo_data.py
 ```
 
 ### Database Refresh

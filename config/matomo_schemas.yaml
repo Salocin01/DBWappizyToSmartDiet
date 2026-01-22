@@ -1,0 +1,338 @@
+# Matomo Table Schemas for MariaDB to PostgreSQL Migration
+# These schemas define how Matomo analytics tables are migrated from MariaDB to PostgreSQL
+
+matomo_log_visit:
+  description: "Matomo visit tracking table - stores visitor session data"
+  source_table: matomo_log_visit
+  columns:
+    - name: idvisit
+      sql_type: BIGINT
+      nullable: false
+      primary_key: true
+    - name: idsite
+      sql_type: INTEGER
+      nullable: false
+    - name: idvisitor
+      sql_type: BYTEA
+      nullable: false
+    - name: visit_last_action_time
+      sql_type: TIMESTAMP
+      nullable: false
+    - name: config_id
+      sql_type: BYTEA
+      nullable: false
+    - name: location_ip
+      sql_type: BYTEA
+      nullable: false
+    - name: last_idlink_va
+      sql_type: BIGINT
+      nullable: true
+    - name: custom_dimension_1
+      sql_type: VARCHAR(200)
+      nullable: true
+    - name: custom_dimension_2
+      sql_type: VARCHAR(200)
+      nullable: true
+    - name: custom_dimension_3
+      sql_type: VARCHAR(200)
+      nullable: true
+    - name: custom_dimension_4
+      sql_type: VARCHAR(200)
+      nullable: true
+    - name: custom_dimension_5
+      sql_type: VARCHAR(200)
+      nullable: true
+    - name: profilable
+      sql_type: SMALLINT
+      nullable: false
+    - name: user_id
+      sql_type: VARCHAR(200)
+      nullable: true
+    - name: visit_first_action_time
+      sql_type: TIMESTAMP
+      nullable: false
+    - name: visit_goal_buyer
+      sql_type: SMALLINT
+      nullable: false
+    - name: visit_goal_converted
+      sql_type: SMALLINT
+      nullable: false
+    - name: visitor_returning
+      sql_type: SMALLINT
+      nullable: false
+    - name: visitor_seconds_since_first
+      sql_type: INTEGER
+      nullable: true
+    - name: visitor_seconds_since_order
+      sql_type: INTEGER
+      nullable: true
+    - name: visitor_count_visits
+      sql_type: INTEGER
+      nullable: false
+    - name: visit_entry_idaction_name
+      sql_type: INTEGER
+      nullable: true
+    - name: visit_entry_idaction_url
+      sql_type: INTEGER
+      nullable: true
+    - name: visit_exit_idaction_name
+      sql_type: INTEGER
+      nullable: true
+    - name: visit_exit_idaction_url
+      sql_type: INTEGER
+      nullable: true
+    - name: visit_total_actions
+      sql_type: INTEGER
+      nullable: false
+    - name: visit_total_interactions
+      sql_type: INTEGER
+      nullable: false
+    - name: visit_total_searches
+      sql_type: INTEGER
+      nullable: false
+    - name: referer_keyword
+      sql_type: VARCHAR(255)
+      nullable: true
+    - name: referer_name
+      sql_type: VARCHAR(255)
+      nullable: true
+    - name: referer_type
+      sql_type: SMALLINT
+      nullable: true
+    - name: referer_url
+      sql_type: TEXT
+      nullable: true
+    - name: location_browser_lang
+      sql_type: VARCHAR(20)
+      nullable: false
+    - name: config_browser_engine
+      sql_type: VARCHAR(10)
+      nullable: false
+    - name: config_browser_name
+      sql_type: VARCHAR(40)
+      nullable: false
+    - name: config_browser_version
+      sql_type: VARCHAR(20)
+      nullable: false
+    - name: config_client_type
+      sql_type: SMALLINT
+      nullable: true
+    - name: config_device_brand
+      sql_type: VARCHAR(100)
+      nullable: true
+    - name: config_device_model
+      sql_type: VARCHAR(100)
+      nullable: true
+    - name: config_device_type
+      sql_type: SMALLINT
+      nullable: true
+    - name: config_os
+      sql_type: VARCHAR(10)
+      nullable: false
+    - name: config_os_version
+      sql_type: VARCHAR(100)
+      nullable: true
+    - name: visit_total_events
+      sql_type: INTEGER
+      nullable: false
+    - name: visitor_localtime
+      sql_type: TIME
+      nullable: true
+    - name: visitor_seconds_since_last
+      sql_type: INTEGER
+      nullable: true
+    - name: config_resolution
+      sql_type: VARCHAR(18)
+      nullable: false
+    - name: config_cookie
+      sql_type: SMALLINT
+      nullable: false
+    - name: config_flash
+      sql_type: SMALLINT
+      nullable: false
+    - name: config_java
+      sql_type: SMALLINT
+      nullable: false
+    - name: config_pdf
+      sql_type: SMALLINT
+      nullable: false
+    - name: config_quicktime
+      sql_type: SMALLINT
+      nullable: false
+    - name: config_realplayer
+      sql_type: SMALLINT
+      nullable: false
+    - name: config_silverlight
+      sql_type: SMALLINT
+      nullable: false
+    - name: config_windowsmedia
+      sql_type: SMALLINT
+      nullable: false
+    - name: visit_total_time
+      sql_type: INTEGER
+      nullable: false
+    - name: location_city
+      sql_type: VARCHAR(255)
+      nullable: true
+    - name: location_country
+      sql_type: VARCHAR(3)
+      nullable: false
+    - name: location_latitude
+      sql_type: DECIMAL(9,6)
+      nullable: true
+    - name: location_longitude
+      sql_type: DECIMAL(9,6)
+      nullable: true
+    - name: location_region
+      sql_type: VARCHAR(3)
+      nullable: true
+
+matomo_log_link_visit_action:
+  description: "Matomo page view tracking table - stores individual page views and actions"
+  source_table: matomo_log_link_visit_action
+  columns:
+    - name: idlink_va
+      sql_type: BIGINT
+      nullable: false
+      primary_key: true
+    - name: idsite
+      sql_type: INTEGER
+      nullable: false
+    - name: idvisitor
+      sql_type: BYTEA
+      nullable: false
+    - name: idvisit
+      sql_type: BIGINT
+      nullable: false
+    - name: idaction_url_ref
+      sql_type: INTEGER
+      nullable: true
+    - name: idaction_name_ref
+      sql_type: INTEGER
+      nullable: true
+    - name: custom_float
+      sql_type: DOUBLE PRECISION
+      nullable: true
+    - name: pageview_position
+      sql_type: INTEGER
+      nullable: true
+    - name: time_spent
+      sql_type: INTEGER
+      nullable: true
+    - name: custom_dimension_1
+      sql_type: VARCHAR(200)
+      nullable: true
+    - name: custom_dimension_2
+      sql_type: VARCHAR(200)
+      nullable: true
+    - name: custom_dimension_3
+      sql_type: VARCHAR(200)
+      nullable: true
+    - name: custom_dimension_4
+      sql_type: VARCHAR(200)
+      nullable: true
+    - name: custom_dimension_5
+      sql_type: VARCHAR(200)
+      nullable: true
+    - name: server_time
+      sql_type: TIMESTAMP
+      nullable: false
+    - name: idpageview
+      sql_type: VARCHAR(6)
+      nullable: true
+    - name: idaction_name
+      sql_type: INTEGER
+      nullable: true
+    - name: idaction_url
+      sql_type: INTEGER
+      nullable: true
+    - name: search_cat
+      sql_type: VARCHAR(200)
+      nullable: true
+    - name: search_count
+      sql_type: INTEGER
+      nullable: true
+    - name: time_spent_ref_action
+      sql_type: INTEGER
+      nullable: true
+    - name: idaction_product_cat
+      sql_type: INTEGER
+      nullable: true
+    - name: idaction_product_cat2
+      sql_type: INTEGER
+      nullable: true
+    - name: idaction_product_cat3
+      sql_type: INTEGER
+      nullable: true
+    - name: idaction_product_cat4
+      sql_type: INTEGER
+      nullable: true
+    - name: idaction_product_cat5
+      sql_type: INTEGER
+      nullable: true
+    - name: idaction_product_name
+      sql_type: INTEGER
+      nullable: true
+    - name: product_price
+      sql_type: DECIMAL(10,2)
+      nullable: true
+    - name: idaction_product_sku
+      sql_type: INTEGER
+      nullable: true
+    - name: idaction_event_action
+      sql_type: INTEGER
+      nullable: true
+    - name: idaction_event_category
+      sql_type: INTEGER
+      nullable: true
+    - name: idaction_content_interaction
+      sql_type: INTEGER
+      nullable: true
+    - name: idaction_content_name
+      sql_type: INTEGER
+      nullable: true
+    - name: idaction_content_piece
+      sql_type: INTEGER
+      nullable: true
+    - name: idaction_content_target
+      sql_type: INTEGER
+      nullable: true
+    - name: time_dom_completion
+      sql_type: INTEGER
+      nullable: true
+    - name: time_dom_processing
+      sql_type: INTEGER
+      nullable: true
+    - name: time_network
+      sql_type: INTEGER
+      nullable: true
+    - name: time_on_load
+      sql_type: INTEGER
+      nullable: true
+    - name: time_server
+      sql_type: INTEGER
+      nullable: true
+    - name: time_transfer
+      sql_type: INTEGER
+      nullable: true
+
+matomo_log_action:
+  description: "Matomo action tracking table - stores URLs, page titles, and other action names"
+  source_table: matomo_log_action
+  columns:
+    - name: idaction
+      sql_type: INTEGER
+      nullable: false
+      primary_key: true
+    - name: name
+      sql_type: TEXT
+      nullable: true
+    - name: hash
+      sql_type: BIGINT
+      nullable: false
+    - name: type
+      sql_type: SMALLINT
+      nullable: true
+    - name: url_prefix
+      sql_type: SMALLINT
+      nullable: true

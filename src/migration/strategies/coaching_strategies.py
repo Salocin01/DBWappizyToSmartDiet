@@ -1,4 +1,5 @@
-from src.migration.import_strategies import DeleteAndInsertStrategy, ImportConfig, ImportUtils
+from src.migration.import_strategies import DeleteAndInsertStrategy, ImportConfig
+from src.migration.repositories.mongo_repo import MongoRepository
 
 
 def create_days_contents_links_strategy():
@@ -8,13 +9,13 @@ def create_days_contents_links_strategy():
         def count_total_documents(self, collection, config: ImportConfig) -> int:
             """Count days that have contents array"""
             mongo_filter = {'contents': {'$exists': True, '$ne': []}}
-            mongo_filter.update(ImportUtils.build_date_filter(config.after_date))
+            mongo_filter.update(MongoRepository.build_date_filter(config.after_date))
             return collection.count_documents(mongo_filter)
 
         def get_documents(self, collection, config: ImportConfig, offset: int = 0):
             """Get day documents with contents array"""
             mongo_filter = {'contents': {'$exists': True, '$ne': []}}
-            mongo_filter.update(ImportUtils.build_date_filter(config.after_date))
+            mongo_filter.update(MongoRepository.build_date_filter(config.after_date))
 
             return list(collection.find(
                 mongo_filter,
@@ -75,13 +76,13 @@ def create_days_logbooks_links_strategy():
         def count_total_documents(self, collection, config: ImportConfig) -> int:
             """Count days that have main_logbooks array"""
             mongo_filter = {'main_logbooks': {'$exists': True, '$ne': []}}
-            mongo_filter.update(ImportUtils.build_date_filter(config.after_date))
+            mongo_filter.update(MongoRepository.build_date_filter(config.after_date))
             return collection.count_documents(mongo_filter)
 
         def get_documents(self, collection, config: ImportConfig, offset: int = 0):
             """Get day documents with main_logbooks array"""
             mongo_filter = {'main_logbooks': {'$exists': True, '$ne': []}}
-            mongo_filter.update(ImportUtils.build_date_filter(config.after_date))
+            mongo_filter.update(MongoRepository.build_date_filter(config.after_date))
 
             return list(collection.find(
                 mongo_filter,

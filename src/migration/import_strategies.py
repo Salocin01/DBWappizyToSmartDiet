@@ -12,7 +12,7 @@ STEP 1: Get Last Migration Date
 STEP 2: Query New/Updated Documents
     - Query MongoDB for documents created or updated after the last migration date
     - Implementation: strategy.count_total_documents() and strategy.get_documents()
-    - Uses ImportUtils.build_date_filter() to construct MongoDB query with $gte operator
+    - Uses MongoRepository.build_date_filter() to construct MongoDB query with $gte operator
     - Filter: {$or: [{creation_date: {$gte: date}}, {update_date: {$gte: date}}]}
     - Purpose: Fetch only changed data since last migration
 
@@ -25,7 +25,7 @@ STEP 3: Transform Data
 
 STEP 4: Execute Import
     - Insert/update records in PostgreSQL with error handling
-    - Implementation: strategy.export_data() calls ImportUtils.execute_batch()
+    - Implementation: strategy.export_data() calls PostgresRepository.execute_batch()
     - Handles ON CONFLICT resolution, batch processing, and transaction management
     - Uses savepoints for atomic batch operations with fallback to individual inserts
     - Purpose: Persist data with integrity and error recovery
@@ -91,8 +91,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Callable, Any
 from bson import ObjectId
-import psycopg2
-from datetime import datetime, time
+from src.migration.repositories.mongo_repo import MongoRepository
+from src.migration.repositories.postgres_repo import PostgresRepository
 
 # Control whether to use batch processing (True) or single-line SQL statements (False)
 IMPORT_BY_BATCH = True
@@ -108,282 +108,6 @@ class ImportConfig:
     after_date: Optional[Any] = None
     custom_filter: Optional[Callable] = None
     summary_instance: Optional[Any] = None
-
-
-class ImportUtils:
-    @staticmethod
-    def build_date_filter(after_date):
-        """Build MongoDB date filter for incremental imports"""
-        if not after_date:
-            return {}
-        
-        if hasattr(after_date, 'date'):  # It's already a datetime
-            date_filter = after_date
-        else:  # It's a date, convert to datetime
-            date_filter = datetime.combine(after_date, time.min)
-        
-        # Filter for entries created OR updated after the specified date
-        return {
-            '$or': [
-                {'creation_date': {'$gte': date_filter}},
-                {'update_date': {'$gte': date_filter}}
-            ]
-        }
-    
-    @staticmethod
-    def handle_batch_errors(conn, cursor, sql, batch_values, table_name, summary_instance):
-        """Handle batch insert errors with fallback to individual inserts"""
-        from .import_summary import ImportSummary
-        summary = summary_instance or ImportSummary()
-        
-        # Close the old cursor and get a fresh one after rollback
-        cursor.close()
-        cursor = conn.cursor()
-        
-        successful_count = 0
-        
-        for values in batch_values:
-            cursor.execute("SAVEPOINT individual_retry")
-            try:
-                cursor.execute(sql, values)
-                cursor.execute("RELEASE SAVEPOINT individual_retry")
-                summary.record_success(table_name)
-                successful_count += 1
-            except psycopg2.IntegrityError as individual_e:
-                cursor.execute("ROLLBACK TO SAVEPOINT individual_retry")
-                error_message = str(individual_e).lower()
-                failed_record = {'id': values[0] if values else 'unknown', 'values': values}
-                
-                if "foreign key constraint" in error_message:
-                    summary.record_error(table_name, 'Foreign key constraint', failed_record)
-                elif "null value" in error_message or "not-null constraint" in error_message:
-                    summary.record_error(table_name, 'NULL constraint', failed_record)
-                else:
-                    summary.record_error(table_name, f'Other integrity error: {str(individual_e)[:100]}', failed_record)
-                continue
-            except Exception as e:
-                cursor.execute("ROLLBACK TO SAVEPOINT individual_retry")
-                failed_record = {'id': values[0] if values else 'unknown', 'values': values}
-                summary.record_error(table_name, f'Unexpected error: {str(e)[:100]}', failed_record)
-                continue
-        
-        conn.commit()
-        cursor.close()
-        return successful_count
-    
-    @staticmethod
-    def execute_sql_file(conn, sql_file_path, summary_instance):
-        """Execute SQL file against the database"""
-        from .import_summary import ImportSummary
-        import os
-        
-        summary = summary_instance or ImportSummary()
-        
-        if not os.path.exists(sql_file_path):
-            return 0
-            
-        cursor = conn.cursor()
-        executed_count = 0
-        failed_count = 0
-        
-        try:
-            with open(sql_file_path, 'r', encoding='utf-8') as f:
-                sql_content = f.read()
-                
-            # Split by semicolons and execute each statement
-            statements = [stmt.strip() for stmt in sql_content.split(';') if stmt.strip()]
-            
-            for i, statement in enumerate(statements):
-                cursor.execute("SAVEPOINT sql_statement")
-                try:
-                    cursor.execute(statement)
-                    cursor.execute("RELEASE SAVEPOINT sql_statement")
-                    executed_count += 1
-                except psycopg2.IntegrityError as e:
-                    cursor.execute("ROLLBACK TO SAVEPOINT sql_statement")
-                    failed_count += 1
-                    # Extract table name from INSERT statement for better tracking
-                    table_name = "unknown"
-                    if "INSERT INTO" in statement.upper():
-                        try:
-                            table_name = statement.upper().split("INSERT INTO")[1].split()[0]
-                        except:
-                            pass
-                    summary.record_error(table_name, f'SQL file integrity error: {str(e)[:100]}', {'statement_index': i})
-                    continue
-                except Exception as e:
-                    cursor.execute("ROLLBACK TO SAVEPOINT sql_statement")
-                    failed_count += 1
-                    table_name = "unknown"
-                    if "INSERT INTO" in statement.upper():
-                        try:
-                            table_name = statement.upper().split("INSERT INTO")[1].split()[0]
-                        except:
-                            pass
-                    summary.record_error(table_name, f'SQL file execution error: {str(e)[:100]}', {'statement_index': i})
-                    print(f"Error executing SQL statement {i+1}: {e}")
-                    continue
-            
-            conn.commit()
-            print(f"SQL file execution completed: {executed_count} successful, {failed_count} failed")
-            return executed_count
-            
-        except Exception as e:
-            print(f"Error reading SQL file {sql_file_path}: {e}")
-            conn.rollback()
-            return 0
-        finally:
-            cursor.close()
-
-    @staticmethod
-    def write_sql_file(batch_values, columns, table_name, summary_instance, use_on_conflict=False, on_conflict_clause=None):
-        """Generate SQL file for batch values"""
-        from .import_summary import ImportSummary
-        import os
-        
-        if not batch_values or not columns:
-            return 0
-            
-        summary = summary_instance or ImportSummary()
-        
-        if on_conflict_clause:
-            conflict_clause = on_conflict_clause
-        else:
-            conflict_clause = " ON CONFLICT (id) DO NOTHING" if use_on_conflict else ""
-        
-        # Generate SQL file
-        os.makedirs("sql_exports", exist_ok=True)
-        sql_file_path = f"sql_exports/{table_name}_import.sql"
-        
-        with open(sql_file_path, 'a', encoding='utf-8') as f:
-            for values in batch_values:
-                # Format values for SQL file
-                formatted_values = []
-                for value in values:
-                    if value is None:
-                        formatted_values.append('NULL')
-                    elif isinstance(value, str):
-                        # Escape single quotes in strings
-                        escaped_value = value.replace("'", "''")
-                        formatted_values.append(f"'{escaped_value}'")
-                    elif isinstance(value, datetime):
-                        formatted_values.append(f"'{value.isoformat()}'")
-                    else:
-                        formatted_values.append(str(value))
-                
-                sql_statement = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({', '.join(formatted_values)}){conflict_clause};\n"
-                f.write(sql_statement)
-        
-        # Record as successful for tracking purposes
-        summary.record_success(table_name, len(batch_values))
-        print(f"Generated SQL for {len(batch_values)} records in {sql_file_path}")
-        return len(batch_values)
-    
-    @staticmethod
-    def execute_direct_sql(conn, batch_values, columns, table_name, summary_instance, use_on_conflict=False, on_conflict_clause=None):
-        """Execute SQL queries directly on the database"""
-        from .import_summary import ImportSummary
-        
-        if not batch_values or not columns:
-            return 0
-        
-        # Filter out any empty lists from batch_values
-        batch_values = [values for values in batch_values if values and len(values) > 0]
-        if not batch_values:
-            return 0
-            
-        summary = summary_instance or ImportSummary()
-        
-        placeholders = ', '.join(['%s'] * len(columns))
-        if on_conflict_clause:
-            conflict_clause = on_conflict_clause
-        else:
-            conflict_clause = " ON CONFLICT (id) DO NOTHING" if use_on_conflict else ""
-        sql_template = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders}){conflict_clause}"
-        
-        
-        cursor = conn.cursor()
-        
-        try:
-            if IMPORT_BY_BATCH:
-                # Use transaction savepoint for batch processing
-                cursor.execute("SAVEPOINT batch_insert")
-                try:
-                    cursor.executemany(sql_template, batch_values)
-                    actual_insertions = cursor.rowcount
-                    
-                    # Verify actual insertions by counting rows
-                    if not use_on_conflict:
-                        # For non-conflict queries, rowcount should match batch size
-                        if actual_insertions != len(batch_values):
-                            cursor.execute("ROLLBACK TO SAVEPOINT batch_insert")
-                            # Fall back to individual processing
-                            return ImportUtils.handle_batch_errors(
-                                conn, cursor, sql_template, batch_values, table_name, summary_instance
-                            )
-                    
-                    cursor.execute("RELEASE SAVEPOINT batch_insert")
-                    skipped_count = len(batch_values) - actual_insertions
-                    
-                    summary.record_success(table_name, actual_insertions)
-                    if skipped_count > 0:
-                        summary.record_skipped(table_name, skipped_count)
-                    
-                    conn.commit()
-                    return actual_insertions
-                    
-                except psycopg2.IntegrityError:
-                    cursor.execute("ROLLBACK TO SAVEPOINT batch_insert")
-                    # Fall back to individual processing
-                    return ImportUtils.handle_batch_errors(
-                        conn, cursor, sql_template, batch_values, table_name, summary_instance
-                    )
-            else:
-                # Use individual transactions with savepoints
-                successful_count = 0
-                for values in batch_values:
-                    cursor.execute("SAVEPOINT individual_insert")
-                    try:
-                        cursor.execute(sql_template, values)
-                        cursor.execute("RELEASE SAVEPOINT individual_insert")
-                        summary.record_success(table_name)
-                        successful_count += 1
-                    except psycopg2.IntegrityError as e:
-                        cursor.execute("ROLLBACK TO SAVEPOINT individual_insert")
-                        error_message = str(e).lower()
-                        failed_record = {'id': values[0] if values else 'unknown', 'values': values}
-                        
-                        if "foreign key constraint" in error_message:
-                            summary.record_error(table_name, 'Foreign key constraint', failed_record)
-                        elif "null value" in error_message or "not-null constraint" in error_message:
-                            summary.record_error(table_name, 'NULL constraint', failed_record)
-                        else:
-                            summary.record_error(table_name, f'Other integrity error: {str(e)[:100]}', failed_record)
-                        continue
-                
-                conn.commit()
-                return successful_count
-            
-        except Exception as e:
-            conn.rollback()
-            cursor.close()
-            cursor = conn.cursor()  # Get fresh cursor
-            raise e
-        finally:
-            cursor.close()
-    
-    @staticmethod
-    def execute_batch(conn, batch_values, columns, table_name, summary_instance, use_on_conflict=False, on_conflict_clause=None):
-        """Execute insert with error handling and progress tracking or generate SQL files"""
-        if DIRECT_IMPORT:
-            return ImportUtils.execute_direct_sql(
-                conn, batch_values, columns, table_name, summary_instance, use_on_conflict, on_conflict_clause
-            )
-        else:
-            # Generate SQL file (accumulate without executing)
-            return ImportUtils.write_sql_file(
-                batch_values, columns, table_name, summary_instance, use_on_conflict, on_conflict_clause
-            )
 
 
 class ImportStrategy(ABC):
@@ -437,14 +161,18 @@ class ImportStrategy(ABC):
     def export_data(self, conn, collection, config: ImportConfig):
         """Generic export implementation that works for both strategies"""
         import os
-        
+
+        postgres_repo = PostgresRepository(
+            conn,
+            summary_instance=config.summary_instance,
+            import_by_batch=IMPORT_BY_BATCH,
+            direct_import=DIRECT_IMPORT,
+        )
+
         # Ensure SQL exports directory exists
         if not DIRECT_IMPORT:
             os.makedirs("sql_exports", exist_ok=True)
-        
-        if DIRECT_IMPORT:
-            cursor = conn.cursor()
-        
+
         # Get total count for progress tracking
         total_docs = self.count_total_documents(collection, config)
         processed_docs = 0
@@ -473,10 +201,12 @@ class ImportStrategy(ABC):
                         batch_values.append(values)
             
             if batch_values:
-                actual_insertions = ImportUtils.execute_batch(
-                    conn, batch_values, columns, config.table_name,
-                    config.summary_instance, use_on_conflict=self.get_use_on_conflict(),
-                    on_conflict_clause=self.get_on_conflict_clause(config.table_name, columns)
+                actual_insertions = postgres_repo.execute_batch(
+                    batch_values,
+                    columns,
+                    config.table_name,
+                    use_on_conflict=self.get_use_on_conflict(),
+                    on_conflict_clause=self.get_on_conflict_clause(config.table_name, columns),
                 )
                 total_records += actual_insertions
                 
@@ -498,14 +228,12 @@ class ImportStrategy(ABC):
         
         action = "processing" if DIRECT_IMPORT else "SQL generation for"
         print(f"Completed {action} {total_records} records from {processed_docs} documents for {config.table_name}")
-        
-        if DIRECT_IMPORT:
-            cursor.close()
-        else:
+
+        if not DIRECT_IMPORT:
             # Execute the accumulated SQL file as one entity row
             sql_file_path = f"sql_exports/{config.table_name}_import.sql"
             if os.path.exists(sql_file_path):
-                executed_count = ImportUtils.execute_sql_file(conn, sql_file_path, config.summary_instance)
+                executed_count = postgres_repo.execute_sql_file(sql_file_path)
                 os.remove(sql_file_path)
                 print(f"Executed and deleted SQL file: {sql_file_path} ({executed_count} statements)")
                 return executed_count
@@ -516,13 +244,16 @@ class DirectTranslationStrategy(ImportStrategy):
     
     def count_total_documents(self, collection, config: ImportConfig) -> int:
         """Count total documents that will be processed"""
-        mongo_filter = ImportUtils.build_date_filter(config.after_date)
-        return collection.count_documents(mongo_filter)
+        return MongoRepository.count_documents(collection, config.after_date)
     
     def get_documents(self, collection, config: ImportConfig, offset: int = 0):
         """Get documents for processing with pagination"""
-        mongo_filter = ImportUtils.build_date_filter(config.after_date)
-        return list(collection.find(mongo_filter).sort('creation_date', 1).skip(offset).limit(config.batch_size))
+        return MongoRepository.find_documents(
+            collection,
+            after_date=config.after_date,
+            offset=offset,
+            limit=config.batch_size,
+        )
     
     def extract_data_for_sql(self, document, config: ImportConfig):
         """Extract and prepare data from a single document for SQL insertion"""
@@ -587,7 +318,7 @@ class ArrayExtractionStrategy(ImportStrategy):
         
         parent_collection = get_mongo_collection(self.config.parent_collection)
         parent_filter = {self.config.array_field: {'$exists': True, '$ne': []}}
-        parent_filter.update(ImportUtils.build_date_filter(config.after_date))
+        parent_filter.update(MongoRepository.build_date_filter(config.after_date))
         
         return parent_collection.count_documents(parent_filter)
     
@@ -597,7 +328,7 @@ class ArrayExtractionStrategy(ImportStrategy):
         
         parent_collection = get_mongo_collection(self.config.parent_collection)
         parent_filter = {self.config.array_field: {'$exists': True, '$ne': []}}
-        parent_filter.update(ImportUtils.build_date_filter(config.after_date))
+        parent_filter.update(MongoRepository.build_date_filter(config.after_date))
         
         return list(parent_collection.find(
             parent_filter,
@@ -734,6 +465,13 @@ class DeleteAndInsertStrategy(ImportStrategy):
 
         print(f"Starting incremental {config.table_name} sync...")
 
+        postgres_repo = PostgresRepository(
+            conn,
+            summary_instance=config.summary_instance,
+            import_by_batch=IMPORT_BY_BATCH,
+            direct_import=DIRECT_IMPORT,
+        )
+
         # Ensure SQL exports directory exists
         if not DIRECT_IMPORT:
             os.makedirs("sql_exports", exist_ok=True)
@@ -773,16 +511,16 @@ class DeleteAndInsertStrategy(ImportStrategy):
 
             # Step 3: Delete existing relationships for changed parents
             if batch_parent_ids and DIRECT_IMPORT:
-                self._delete_existing_relationships(
-                    conn, batch_parent_ids, config
-                )
+                self._delete_existing_relationships(postgres_repo, batch_parent_ids, config)
 
             # Step 4: Insert fresh relationships
             if batch_values:
-                actual_insertions = ImportUtils.execute_batch(
-                    conn, batch_values, columns, config.table_name,
-                    config.summary_instance, use_on_conflict=False,
-                    on_conflict_clause=""
+                actual_insertions = postgres_repo.execute_batch(
+                    batch_values,
+                    columns,
+                    config.table_name,
+                    use_on_conflict=False,
+                    on_conflict_clause="",
                 )
                 total_records += actual_insertions
 
@@ -808,30 +546,26 @@ class DeleteAndInsertStrategy(ImportStrategy):
             # Execute the accumulated SQL file
             sql_file_path = f"sql_exports/{config.table_name}_import.sql"
             if os.path.exists(sql_file_path):
-                executed_count = ImportUtils.execute_sql_file(conn, sql_file_path, config.summary_instance)
+                executed_count = postgres_repo.execute_sql_file(sql_file_path)
                 os.remove(sql_file_path)
                 print(f"Executed and deleted SQL file: {sql_file_path} ({executed_count} statements)")
                 return executed_count
 
         return total_records
 
-    def _delete_existing_relationships(self, conn, parent_ids: List[str], config: ImportConfig):
+    def _delete_existing_relationships(self, postgres_repo, parent_ids: List[str], config: ImportConfig):
         """Delete existing relationships for the specified parent IDs"""
-        cursor = conn.cursor()
+        table_name = self.get_delete_table_name(config)
+        column_name = self.get_delete_column_name()
         try:
-            placeholders = ', '.join(['%s'] * len(parent_ids))
-            table_name = self.get_delete_table_name(config)
-            column_name = self.get_delete_column_name()
-            delete_sql = f"DELETE FROM {table_name} WHERE {column_name} IN ({placeholders})"
-            cursor.execute(delete_sql, parent_ids)
-            deleted_count = cursor.rowcount
-            conn.commit()
+            deleted_count = postgres_repo.delete_by_parent_ids(
+                table_name,
+                column_name,
+                parent_ids,
+            )
             print(f"Deleted {deleted_count} existing relationships for {len(parent_ids)} updated parents")
         except Exception as e:
             print(f"Error deleting existing relationships: {e}")
-            conn.rollback()
-        finally:
-            cursor.close()
 
     def get_use_on_conflict(self) -> bool:
         """Delete-and-insert doesn't use ON CONFLICT"""

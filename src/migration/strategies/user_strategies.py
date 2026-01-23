@@ -1,4 +1,5 @@
-from src.migration.import_strategies import DeleteAndInsertStrategy, DirectTranslationStrategy, ImportConfig, ImportUtils
+from src.migration.import_strategies import DeleteAndInsertStrategy, DirectTranslationStrategy, ImportConfig
+from src.migration.repositories.mongo_repo import MongoRepository
 
 
 def create_user_events_strategy():
@@ -8,13 +9,13 @@ def create_user_events_strategy():
         def count_total_documents(self, collection, config: ImportConfig) -> int:
             """Count users that have registered_events array"""
             mongo_filter = {'registered_events': {'$exists': True, '$ne': []}}
-            mongo_filter.update(ImportUtils.build_date_filter(config.after_date))
+            mongo_filter.update(MongoRepository.build_date_filter(config.after_date))
             return collection.count_documents(mongo_filter)
 
         def get_documents(self, collection, config: ImportConfig, offset: int = 0):
             """Get user documents with registered_events array"""
             mongo_filter = {'registered_events': {'$exists': True, '$ne': []}}
-            mongo_filter.update(ImportUtils.build_date_filter(config.after_date))
+            mongo_filter.update(MongoRepository.build_date_filter(config.after_date))
 
             return list(collection.find(
                 mongo_filter,
@@ -81,7 +82,7 @@ def create_users_targets_strategy():
                 {'specificity_targets': {'$exists': True, '$ne': []}},
                 {'health_targets': {'$exists': True, '$ne': []}}
             ]}
-            mongo_filter.update(ImportUtils.build_date_filter(config.after_date))
+            mongo_filter.update(MongoRepository.build_date_filter(config.after_date))
             return collection.count_documents(mongo_filter)
 
         def get_documents(self, collection, config: ImportConfig, offset: int = 0):
@@ -91,7 +92,7 @@ def create_users_targets_strategy():
                 {'specificity_targets': {'$exists': True, '$ne': []}},
                 {'health_targets': {'$exists': True, '$ne': []}}
             ]}
-            mongo_filter.update(ImportUtils.build_date_filter(config.after_date))
+            mongo_filter.update(MongoRepository.build_date_filter(config.after_date))
 
             return list(collection.find(
                 mongo_filter,

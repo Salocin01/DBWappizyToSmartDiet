@@ -1,4 +1,5 @@
-from src.migration.import_strategies import DeleteAndInsertStrategy, ImportConfig, ImportUtils
+from src.migration.import_strategies import DeleteAndInsertStrategy, ImportConfig
+from src.migration.repositories.mongo_repo import MongoRepository
 
 
 def create_users_contents_reads_strategy():
@@ -8,13 +9,13 @@ def create_users_contents_reads_strategy():
         def count_total_documents(self, collection, config: ImportConfig) -> int:
             """Count contents that have viewed_by array"""
             mongo_filter = {'viewed_by': {'$exists': True, '$ne': []}}
-            mongo_filter.update(ImportUtils.build_date_filter(config.after_date))
+            mongo_filter.update(MongoRepository.build_date_filter(config.after_date))
             return collection.count_documents(mongo_filter)
 
         def get_documents(self, collection, config: ImportConfig, offset: int = 0):
             """Get content documents with viewed_by array"""
             mongo_filter = {'viewed_by': {'$exists': True, '$ne': []}}
-            mongo_filter.update(ImportUtils.build_date_filter(config.after_date))
+            mongo_filter.update(MongoRepository.build_date_filter(config.after_date))
 
             return list(collection.find(
                 mongo_filter,

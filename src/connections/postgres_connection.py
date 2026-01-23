@@ -3,6 +3,8 @@ import psycopg2
 from psycopg2 import pool
 from dotenv import load_dotenv
 from sshtunnel import SSHTunnelForwarder
+from datetime import datetime
+from typing import Optional
 
 load_dotenv()
 
@@ -105,6 +107,31 @@ def close_postgres_connection():
     if _pg_connection_instance:
         _pg_connection_instance.close_all_connections()
         _pg_connection_instance = None
+
+def parse_global_date_threshold() -> Optional[datetime]:
+    """
+    Parse and validate the GLOBAL_DATE_THRESHOLD environment variable.
+    Expected format: ISO 8601 date (YYYY-MM-DD)
+
+    Returns:
+        datetime: Parsed date at 00:00:00 if valid and set
+        None: If not set, empty string, or invalid format
+    """
+    threshold_str = os.getenv('GLOBAL_DATE_THRESHOLD', '').strip()
+
+    if not threshold_str:
+        return None
+
+    try:
+        date_obj = datetime.fromisoformat(threshold_str)
+        print(f"✓ Global date threshold loaded: {threshold_str}")
+        return date_obj
+    except ValueError:
+        print(f"⚠️  Invalid GLOBAL_DATE_THRESHOLD format: '{threshold_str}'")
+        print(f"   Expected format: YYYY-MM-DD (ISO 8601)")
+        print(f"   Example: GLOBAL_DATE_THRESHOLD=2024-01-01")
+        print(f"   → Ignoring global threshold, using table-specific dates")
+        return None
 
 def setup_tables(conn):
     try:

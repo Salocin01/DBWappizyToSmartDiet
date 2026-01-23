@@ -398,6 +398,77 @@ When you change a table structure:
 
 4. **Commit the schema changes** (without the force flags) to version control
 
+### Global Date Threshold Configuration
+
+The migration system supports an optional global date threshold that extends the migration window backward across all tables, useful for recovering lost data or re-syncing from a specific point in time.
+
+#### Configuration
+
+Set via environment variable in `.env`:
+
+```bash
+GLOBAL_DATE_THRESHOLD=2024-01-01  # ISO 8601 format (YYYY-MM-DD)
+```
+
+#### Behavior
+
+When both global threshold and table-specific last date exist:
+- **Uses the EARLIER date** to extend the sync window backward
+- Example:
+  - Global threshold: 2024-01-01
+  - Table last date: 2024-03-15
+  - Result: Migrates records from 2024-01-01 forward (extends window 2.5 months backward)
+
+#### Date Logic Priority
+
+1. **force_reimport=true**: Bypasses all date logic (full reimport, after_date=None)
+2. **Global threshold + table date**: Uses earlier date (extends window backward)
+3. **Table date only**: Uses table-specific last migration date (normal incremental)
+4. **Neither**: Full migration (first run, after_date=None)
+
+#### Logging
+
+When enabled:
+```
+✓ Global date threshold loaded: 2024-01-01
+🌐 Global date threshold active: 2024-01-01
+
+📅 Step 1: Last migration date: 2024-03-15 10:30:00
+   → Global threshold is earlier; extending sync window backward
+```
+
+#### Common Use Cases
+
+**Scenario 1: Recover lost data (one-time sync)**
+```bash
+GLOBAL_DATE_THRESHOLD=2024-01-01  # Recovers data from Jan 1
+# Run migration once, then remove GLOBAL_DATE_THRESHOLD
+```
+
+**Scenario 2: Re-sync from checkpoint**
+```bash
+GLOBAL_DATE_THRESHOLD=2024-06-01  # Extend all tables back to June
+# Useful after data corrections in MongoDB
+```
+
+**Scenario 3: Limit historical data on first run**
+```bash
+GLOBAL_DATE_THRESHOLD=2023-01-01  # Don't sync older than this
+# Prevents excessive historical data on initial migration
+```
+
+#### Format Requirements
+
+- **Valid**: `YYYY-MM-DD` (e.g., `2024-01-15`, `2023-12-31`)
+- **Invalid**: `2024/01/15`, `01-01-2024`, `2024-01-15 10:00:00`
+- **Behavior on invalid format**: Logs warning, falls back to table-specific dates
+
+#### Backward Compatibility
+
+- If `GLOBAL_DATE_THRESHOLD` is not set or empty: No change to behavior
+- Existing migrations continue working unchanged
+- No database schema changes required
+
 ### Users Targets Feature
 
 The `users_targets` table represents a many-to-many relationship between users and their health/wellness targets. Unlike simple array extraction, this feature consolidates three different MongoDB arrays into a single normalized table.

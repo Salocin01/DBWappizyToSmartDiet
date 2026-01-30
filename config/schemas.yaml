@@ -94,6 +94,8 @@ tables:
         nullable: false
       - name: insurer
         sql_type: VARCHAR(255)
+      - name: phone
+        sql_type: VARCHAR(255)
       - name: population
         sql_type: VARCHAR(255)
       - name: sso_id

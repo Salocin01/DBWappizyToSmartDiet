@@ -263,6 +263,99 @@ class PostgresRepository:
         finally:
             cursor.close()
 
+    def fetch_existing_relationships(self, table_name, parent_column, child_column, parent_id, additional_columns=None):
+        """
+        Fetch existing child IDs for a given parent from PostgreSQL.
+
+        Args:
+            table_name: Name of the relationship table
+            parent_column: Column name for parent ID (e.g., 'user_id')
+            child_column: Column name for child ID (e.g., 'target_id')
+            parent_id: Parent entity ID to query for
+            additional_columns: List of additional columns to include in results (e.g., ['type'])
+
+        Returns:
+            Set of tuples: For simple relationships: {('child_id1',), ('child_id2',)}
+                          With additional columns: {('child_id1', 'basic'), ('child_id2', 'health')}
+        """
+        cursor = self.conn.cursor()
+        try:
+            if additional_columns:
+                columns_str = ", ".join([child_column] + additional_columns)
+            else:
+                columns_str = child_column
+
+            query = f"SELECT {columns_str} FROM {table_name} WHERE {parent_column} = %s"
+            cursor.execute(query, (parent_id,))
+
+            results = cursor.fetchall()
+            # Return as set of tuples for efficient set operations
+            return set(results)
+        except Exception:
+            raise
+        finally:
+            cursor.close()
+
+    def delete_specific_relationships(self, table_name, parent_column, child_column, parent_id, child_ids_to_delete, additional_conditions=None):
+        """
+        Delete specific relationships (not all relationships for a parent).
+
+        Args:
+            table_name: Name of the relationship table
+            parent_column: Column name for parent ID
+            child_column: Column name for child ID
+            parent_id: Parent entity ID
+            child_ids_to_delete: Set of tuples representing relationships to delete
+            additional_conditions: Dict of column:value pairs for additional WHERE conditions (e.g., {'type': 'basic'})
+
+        Returns:
+            Number of rows deleted
+        """
+        if not child_ids_to_delete:
+            return 0
+
+        cursor = self.conn.cursor()
+        try:
+            # Build WHERE clause based on structure of child_ids_to_delete
+            if additional_conditions:
+                # Handle complex keys like (child_id, type)
+                delete_conditions = []
+                params = []
+                for item in child_ids_to_delete:
+                    if isinstance(item, tuple) and len(item) > 1:
+                        # Multi-column key: (child_id, type, ...)
+                        condition_parts = [f"{parent_column} = %s", f"{child_column} = %s"]
+                        params.extend([parent_id, item[0]])
+
+                        # Add additional columns from tuple
+                        for idx, col in enumerate(additional_conditions.keys(), start=1):
+                            condition_parts.append(f"{col} = %s")
+                            params.append(item[idx])
+
+                        delete_conditions.append(f"({' AND '.join(condition_parts)})")
+                    else:
+                        # Simple key
+                        delete_conditions.append(f"({parent_column} = %s AND {child_column} = %s)")
+                        params.extend([parent_id, item[0] if isinstance(item, tuple) else item])
+
+                delete_sql = f"DELETE FROM {table_name} WHERE " + " OR ".join(delete_conditions)
+            else:
+                # Simple case: just child_id
+                child_ids_list = [item[0] if isinstance(item, tuple) else item for item in child_ids_to_delete]
+                placeholders = ", ".join(["%s"] * len(child_ids_list))
+                delete_sql = f"DELETE FROM {table_name} WHERE {parent_column} = %s AND {child_column} IN ({placeholders})"
+                params = [parent_id] + child_ids_list
+
+            cursor.execute(delete_sql, params)
+            deleted_count = cursor.rowcount
+            self.conn.commit()
+            return deleted_count
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            cursor.close()
+
     def _extract_table_name(self, statement):
         table_name = "unknown"
         if "INSERT INTO" in statement.upper():

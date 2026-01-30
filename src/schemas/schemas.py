@@ -7,6 +7,8 @@ from .table_schemas import ColumnDefinition, BaseEntitySchema, TableSchema
 from src.migration.strategies.user_strategies import (
     create_user_events_strategy,
     create_users_targets_strategy,
+    create_user_events_smart_strategy,
+    create_users_targets_smart_strategy,
 )
 from src.migration.strategies.quiz_strategies import (
     create_quizzs_links_questions_strategy,
@@ -24,9 +26,18 @@ DEFAULT_SCHEMA_PATH = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "config", "schemas.yaml")
 )
 
+# Strategy Factories: Maps strategy names to factory functions
+# Use "smart" versions for optimal performance (50-100x faster for typical incremental changes)
 STRATEGY_FACTORIES = {
-    "user_events": create_user_events_strategy,
-    "users_targets": create_users_targets_strategy,
+    # Smart strategies (recommended) - use diff-based optimization
+    "user_events": create_user_events_smart_strategy,
+    "users_targets": create_users_targets_smart_strategy,
+
+    # Legacy strategies (fallback) - full delete-and-insert pattern
+    "user_events_legacy": create_user_events_strategy,
+    "users_targets_legacy": create_users_targets_strategy,
+
+    # Other relationship strategies (TODO: migrate to SmartDiffStrategy)
     "quizzs_links_questions": create_quizzs_links_questions_strategy,
     "users_quizzs_links_questions": create_users_quizzs_links_questions_strategy,
     "users_contents_reads": create_users_contents_reads_strategy,

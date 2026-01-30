@@ -1,937 +1,384 @@
 # DBWappizyToSmartDiet - Database Migration Tool
 
-This project is a Python-based database migration tool that transfers data from MongoDB to PostgreSQL. It's designed to migrate a diet/wellness application database with complex relationships between users, quizzes, appointments, and coaching data.
+Python-based migration tool that transfers data from MongoDB to PostgreSQL for a diet/wellness application with complex relationships between users, quizzes, appointments, and coaching data.
 
-## Project Structure
+## Quick Reference
 
-```
-├── config/                    # Configuration files
-│   ├── schemas.yaml           # YAML schema source of truth (MongoDB)
-│   └── matomo_schemas.yaml    # YAML schema for Matomo tables
-├── logs/                      # Application logs
-├── sql_exports/               # SQL export files
-├── src/
-│   ├── connections/
-│   │   ├── mongo_connection.py    # MongoDB connection singleton
-│   │   ├── postgres_connection.py # PostgreSQL connection setup
-│   │   └── mariadb_connection.py  # MariaDB connection for Matomo
-│   ├── migration/
-│   │   ├── data_export.py         # Core data export logic
-│   │   ├── import_strategies.py   # Base strategy classes and utilities
-│   │   ├── runner.py              # Migration orchestration entrypoint
-│   │   ├── matomo_sync.py         # Matomo analytics sync logic
-│   │   ├── strategies/            # Strategy implementations by domain
-│   │   │   ├── user_strategies.py     # User events and targets
-│   │   │   ├── quiz_strategies.py     # Quiz relationships
-│   │   │   ├── content_strategies.py  # Content read tracking
-│   │   │   └── coaching_strategies.py # Coaching days and links
-│   │   └── import_summary.py      # Migration reporting
-│   ├── schemas/
-│   │   ├── schemas.py            # YAML-driven schema loader
-│   │   └── table_schemas.py      # Base schema classes
-│   └── utils/                    # Utility modules
-└── tests/                     # Test files
-```
+**Main Scripts:**
+- `python transfert_data.py` - Run full MongoDB → PostgreSQL migration
+- `python sync_matomo_data.py` - Sync Matomo analytics (MariaDB → PostgreSQL)
+- `python refresh_postgres_db.py` / `refresh_mongo_db.py` - Database refresh utilities
+- `python check_db_differences.py` - Compare database structures
 
-## Key Components
+**Key Directories:**
+- `config/schemas.yaml` - Schema definitions (source of truth)
+- `src/migration/strategies/` - Custom import strategies by domain
+- `src/connections/` - Database connection managers
 
-### Main Scripts
-- `transfert_data.py` - CLI entrypoint that invokes the migration runner
-- `src/migration/runner.py` - Main migration orchestration (iterates schemas, runs strategies)
-- `sync_matomo_data.py` - Matomo analytics data synchronization from MariaDB to PostgreSQL
-- `src/migration/matomo_sync.py` - Matomo sync logic and table management
-- `refresh_mongo_db.py` - MongoDB database refresh utility
-- `refresh_postgres_db.py` - PostgreSQL database refresh utility
-- `check_db_differences.py` - Database comparison tool
+## Core Architecture
 
-### Database Schema
-The project migrates the following entities (in order):
-1. **Base entities**: ingredients, appointment_types, companies, offers, categories, targets, recipes, quizzs, quizzs_questions
-2. **Users & Events**: events, users, menus, quizzs_links_questions
-3. **Relationships**: user_events, users_targets, messages, coachings, users_logbook, menu_recipes, users_quizzs, users_quizzs_questions, items, contents, users_contents_reads
-4. **Complex data**: appointments, periods, users_quizzs_links_questions
-5. **Coaching days**: days
-6. **Day relationships**: days_contents_links, days_logbooks_links
-
-### Special Features
-- **Array Extraction**: Handles MongoDB arrays as separate PostgreSQL tables
-- **Incremental Migration**: Only imports records created or updated after the last migration
-- **Upsert Strategy**: Automatically updates existing records instead of skipping them
-- **Foreign Key Management**: Maintains referential integrity during migration
-- **Custom Strategies**: Specialized import logic for complex data structures
-- **Multi-Array Consolidation**: Combines multiple MongoDB arrays into single PostgreSQL tables with type discrimination (e.g., users_targets)
-
-## Database Transformation Process
-
-### Core Transformation
-The system performs a complete structural transformation from MongoDB's document-based format to PostgreSQL's relational format:
-
-- **MongoDB collections** → **PostgreSQL tables** with defined schemas
-- **Document fields** → **Typed columns** (VARCHAR, INTEGER, TIMESTAMP, etc.)
-- **ObjectId references** → **Foreign key relationships**
-- **Nested documents** → **Normalized separate tables**
-
-### Data Type Conversions
-- `ObjectId` → `VARCHAR` (string representation)
-- MongoDB dates → PostgreSQL `TIMESTAMP`/`DATE`
-- Embedded documents → Foreign key references
-- Arrays → Separate junction/relationship tables
+### Data Transformation
+- MongoDB collections → PostgreSQL tables with defined schemas
+- ObjectId references → Foreign key relationships (VARCHAR)
+- Nested documents → Normalized separate tables
+- Arrays → Junction/relationship tables
+- MongoDB dates → PostgreSQL TIMESTAMP/DATE
 
 ### Migration Strategies
 
-The system uses three main strategy types to handle different data migration patterns:
+**Four main patterns:**
 
-#### DirectTranslationStrategy
-Simple 1:1 mapping for basic entities:
-- Collections like `users`, `companies`, `ingredients`, `events`
-- Direct field mapping with type conversion based on schema definitions
-- Handles missing fields as NULL values
-- Uses `ON CONFLICT DO UPDATE` for automatic upserts
-- Pattern: One document → One table row
+1. **DirectTranslationStrategy** - Simple 1:1 document to row mapping
+   - For: users, companies, ingredients, events, etc.
+   - Uses: `ON CONFLICT (id) DO UPDATE` for upserts
+   - Pattern: One document → One table row
 
-#### ArrayExtractionStrategy
-Complex array normalization for direct collections:
-- `menu.recipes[]` → `menu_recipes` table (if stored as arrays)
-- Uses `ON CONFLICT DO UPDATE` on unique constraints
-- Handles both embedded documents and ObjectId references in arrays
-- Updates timestamps when relationships already exist
-- Pattern: One document with array → Multiple table rows
+2. **ArrayExtractionStrategy** - Array normalization for separate collections
+   - For: menu.recipes[] → menu_recipes table (when stored as arrays)
+   - Uses: `ON CONFLICT (unique_constraint) DO UPDATE`
+   - Pattern: One document with array → Multiple table rows
+   - **Limitation**: Cannot detect array item removals (orphaned data)
 
-#### DeleteAndInsertStrategy (Base Class)
-Template method pattern for relationship tables requiring complete array synchronization:
+3. **DeleteAndInsertStrategy** - Complete array synchronization (base class)
+   - For: Relationship tables where array items can be removed
+   - Why: Upsert can't detect removals; DELETE+INSERT ensures exact mirror
+   - Pattern: DELETE all relationships for changed parent, INSERT fresh data
+   - **Limitation**: Inefficient for small changes (deletes/inserts ALL items)
+   - Legacy: Older implementations still use this
 
-**Architecture:**
-- Base class implementing the 4-step migration pattern
-- Template method `export_data()` handles common control flow
-- Subclasses implement data extraction and configuration methods
-
-**Why delete-and-insert pattern?**
-   - When items are removed from MongoDB arrays, they disappear from the document
-- Upsert strategies (ON CONFLICT DO UPDATE) can't detect removals
-- Delete-and-insert ensures PostgreSQL perfectly mirrors MongoDB's current state
-- Example: User unregisters from an event → removed from `registered_events[]` array
-  - Without DELETE: orphaned relationship remains in PostgreSQL
-  - With DELETE + INSERT: PostgreSQL reflects current state accurately
-
-**The 4-step process:**
-1. **Get last migration date** (handled by `src/migration/runner.py`)
-   - Query PostgreSQL for latest timestamp
-   - Returns None for full import, datetime for incremental
-
-2. **Query changed documents** (implemented by subclasses)
-   - Find parent documents with changes to array fields
-   - Filter by creation/update dates using MongoDB $gte operator
-   - Uses methods: `count_total_documents()`, `get_documents()`
-
-3. **Extract relationship data** (implemented by subclasses)
-   - Transform document arrays into SQL row data
-   - Handle type discrimination (e.g., basic/specificity/health targets)
-   - Uses method: `extract_data_for_sql()`
-
-4. **Delete old + Insert fresh relationships** (handled by base class)
-   - DELETE all relationships for changed parent documents
-   - INSERT fresh relationships from current array state
-   - No ON CONFLICT clause needed (fresh insert)
-   - Uses method: `export_data()` (template method)
-
-**Subclass implementations:**
-
-**UserEventsStrategy** (extends DeleteAndInsertStrategy)
-- Migrates: `users.registered_events[]` → `user_events` table
-- Handles event registration and unregistration
-- Supports both ObjectId and embedded document formats
-- Unique constraint: (user_id, event_id)
-- Example change: User adds/removes event from registered list
-  - DELETE all user_events for that user_id
-  - INSERT fresh relationships from current registered_events array
-
-**UsersTargetsStrategy** (extends DeleteAndInsertStrategy)
-- Migrates three arrays to one table with type discrimination:
-  - `users.targets[]` → `users_targets` (type='basic')
-  - `users.specificity_targets[]` → `users_targets` (type='specificity')
-  - `users.health_targets[]` → `users_targets` (type='health')
-- Unique constraint: (user_id, target_id, type)
-- Example change: User modifies any of the three target arrays
-  - DELETE all users_targets for that user_id
-  - INSERT fresh relationships from all three arrays with appropriate types
+4. **SmartDiffStrategy** - Intelligent diff-based optimization (RECOMMENDED)
+   - For: Relationship tables with typical small incremental changes
+   - Why: 50-100x faster than delete-and-insert for small changes
+   - Pattern: Compute diff, apply only delta (INSERT new, DELETE removed)
+   - **Auto-selects strategy**: Diff-based for ≤30% changes, delete-and-insert for >30%
+   - Subclasses: UserEventsSmartStrategy, UsersTargetsSmartStrategy (recommended)
 
 **Strategy Class Hierarchy:**
 ```
 ImportStrategy (ABC)
 ├── DirectTranslationStrategy
 │   └── UsersLogbookStrategy (custom filtering)
-├── ArrayExtractionStrategy
-└── DeleteAndInsertStrategy (Base class for relationships)
-    ├── UserEventsStrategy
-    ├── UsersTargetsStrategy
-    ├── QuizzsLinksQuestionsStrategy
-    ├── UsersQuizzsLinksQuestionsStrategy
-    ├── UsersContentsReadsStrategy
-    ├── DaysContentsLinksStrategy
-    └── DaysLogbooksLinksStrategy
+├── ArrayExtractionStrategy (⚠️ Can't detect removals)
+├── DeleteAndInsertStrategy (Legacy - inefficient)
+│   ├── UserEventsStrategy (legacy)
+│   ├── UsersTargetsStrategy (legacy)
+│   ├── QuizzsLinksQuestionsStrategy
+│   ├── UsersQuizzsLinksQuestionsStrategy
+│   ├── UsersContentsReadsStrategy
+│   ├── DaysContentsLinksStrategy
+│   └── DaysLogbooksLinksStrategy
+└── SmartDiffStrategy (✅ RECOMMENDED for relationships)
+    ├── UserEventsSmartStrategy
+    └── UsersTargetsSmartStrategy
 ```
 
-**Benefits of this architecture:**
-- Eliminates ~220 lines of code duplication
-- Single source of truth for delete-and-insert logic
-- Easy to add new relationship tables (just extend DeleteAndInsertStrategy)
-- Template method pattern ensures consistent behavior
-- Maintains full backward compatibility
+**Performance Comparison:**
 
-### Incremental Migration & Update Strategy
+| Strategy | Small Change (2%) | Medium Change (30%) | Large Change (100%) |
+|----------|------------------|---------------------|---------------------|
+| ArrayExtractionStrategy | ⚠️ Orphaned data | ⚠️ Orphaned data | ⚠️ Orphaned data |
+| DeleteAndInsertStrategy | 100 ops | 100 ops | 100 ops |
+| SmartDiffStrategy | 2 ops (50x faster) | 30 ops (3x faster) | 100 ops (same) |
 
-The migration system supports incremental synchronization to efficiently handle large datasets and ongoing updates.
+*Example: User has 50 items, modifies 1 item*
 
-#### Date Filtering
+### Incremental Migration
 
-The system uses `$gte` (greater than or equal to) comparison for incremental imports:
+**Date Filtering:**
+- Uses `$gte` comparison: `{$or: [{'creation_date': {$gte: after_date}}, {'update_date': {$gte: after_date}}]}`
+- Last migration timestamp: `MAX(GREATEST(created_at, updated_at))` from PostgreSQL
+- Inclusive comparison ensures no records missed during migration execution
 
-```python
-# MongoDB query filter
-{
-    '$or': [
-        {'creation_date': {'$gte': after_date}},
-        {'update_date': {'$gte': after_date}}
-    ]
-}
-```
-
-- **Last migration timestamp**: Retrieved from PostgreSQL using `MAX(GREATEST(created_at, updated_at))`
-- **Inclusive comparison**: Records created or updated exactly at the last migration timestamp are included
-- **Rationale**: Ensures no records are missed even if created during migration execution
-
-#### Upsert Behavior (ON CONFLICT DO UPDATE)
-
-All import strategies use PostgreSQL's `ON CONFLICT` clause to handle duplicate records:
-
-##### Tables with Primary Key (`id`)
+**Upsert Behavior:**
 ```sql
-INSERT INTO users (id, created_at, updated_at, firstname, lastname, email, ...)
-VALUES (...)
-ON CONFLICT (id) DO UPDATE SET
-  created_at = EXCLUDED.created_at,
-  updated_at = EXCLUDED.updated_at,
-  firstname = EXCLUDED.firstname,
-  lastname = EXCLUDED.lastname,
-  email = EXCLUDED.email,
-  ...
+-- Tables with primary key
+INSERT INTO users (...) VALUES (...)
+ON CONFLICT (id) DO UPDATE SET ...
+
+-- Tables with unique constraints
+INSERT INTO user_events (...) VALUES (...)
+ON CONFLICT (user_id, event_id) DO UPDATE SET ...
 ```
 
-##### Tables with Unique Constraints
-```sql
-INSERT INTO user_events (user_id, event_id, created_at, updated_at)
-VALUES (...)
-ON CONFLICT (user_id, event_id) DO UPDATE SET
-  created_at = EXCLUDED.created_at,
-  updated_at = EXCLUDED.updated_at
-```
+**Scenarios:**
+- New record → Inserted
+- Updated record → Updated via ON CONFLICT
+- Unchanged record → Filtered out by date query
+- Relationship changes → Full refresh via DELETE+INSERT
 
-#### Update Handling Examples
+### Export Order & Dependencies
 
-**Scenario 1: New Record**
-- MongoDB: Record created after last migration
-- PostgreSQL: Inserted normally
-- Result: New record in PostgreSQL ✓
+Migration follows strict dependency order (1-6):
 
-**Scenario 2: Updated Record**
-- MongoDB: Record exists but was updated after last migration
-- PostgreSQL: Record exists with older data
-- Result: PostgreSQL record updated with latest data ✓
+1. **Base entities** (no dependencies): ingredients, appointment_types, companies, offers, categories, targets, recipes, quizzs, quizzs_questions, contents
+2. **Core entities**: events, users, menus, quizzs_links_questions
+3. **Relationships**: user_events, users_targets, messages, coachings, users_logbook, menu_recipes, users_quizzs, users_quizzs_questions, users_contents_reads
+4. **Complex data**: appointments, periods, items, users_quizzs_links_questions
+5. **Coaching days**: days
+6. **Day relationships**: days_contents_links, days_logbooks_links
 
-**Scenario 3: Unchanged Record**
-- MongoDB: Record hasn't changed since last migration
-- PostgreSQL: Record exists
-- Result: Not fetched from MongoDB (filtered out by date query) ✓
+## Advanced Features
 
-**Scenario 4: Relationship Changes (users_targets)**
-- MongoDB: User's target arrays modified
-- PostgreSQL: Uses delete-and-insert pattern
-- Result: All relationships for that user refreshed ✓
+### Force Reimport
 
-#### Strategy-Specific Behavior
+Configure per table in `config/schemas.yaml`:
 
-| Strategy | Conflict Resolution | Update Handling |
-|----------|-------------------|-----------------|
-| DirectTranslationStrategy | `ON CONFLICT (id) DO UPDATE` | All columns updated except primary key |
-| UsersLogbookStrategy | `ON CONFLICT (user_id, day) DO UPDATE` | Timestamps updated; filters documents with user field |
-| ArrayExtractionStrategy | `ON CONFLICT (unique_constraint) DO UPDATE` | Timestamps updated (for separate collections like menu_recipes) |
-| UserEventsStrategy | Delete + Insert (no conflict clause) | Full relationship refresh per user |
-| UsersTargetsStrategy | Delete + Insert (no conflict clause) | Full relationship refresh per user |
-| QuizzsLinksQuestionsStrategy | Delete + Insert (no conflict clause) | Full relationship refresh per quiz |
-| UsersQuizzsLinksQuestionsStrategy | Delete + Insert (no conflict clause) | Full relationship refresh per user quiz |
-| UsersContentsReadsStrategy | Delete + Insert (no conflict clause) | Full relationship refresh per content |
-| DaysContentsLinksStrategy | Delete + Insert (no conflict clause) | Full relationship refresh per day |
-| DaysLogbooksLinksStrategy | Delete + Insert (no conflict clause) | Full relationship refresh per day |
+**`force_reimport: true`** - Bypasses incremental logic, forces full reimport
+- Use when: Re-syncing all data, testing, or after manual PostgreSQL changes
 
-### Force Reimport Feature
+**`truncate_before_import: true`** - Clears table before import (requires force_reimport)
+- Use when: Table structure changed, need clean slate
+- Warning: Uses `TRUNCATE TABLE CASCADE` (irreversible)
 
-The migration system supports forcing a complete reimport of specific tables when needed, particularly useful when table structures change or data needs to be completely refreshed.
-
-#### Configuration Flags
-
-Two boolean flags can be set per table in `config/schemas.yaml`:
-
-**1. `force_reimport`** (boolean, default: `false`)
-- When `true`, bypasses incremental migration logic
-- Forces a full reimport of all data from MongoDB regardless of timestamps
-- Ignores the last migration date from PostgreSQL
-- Useful when you need to re-sync all data without changing the table structure
-
-**2. `truncate_before_import`** (boolean, default: `false`)
-- When `true`, truncates (clears) the PostgreSQL table before import
-- Uses `TRUNCATE TABLE {table_name} CASCADE` to remove all existing data
-- **Must be used with `force_reimport: true`** (only effective when force reimport is enabled)
-- Useful when the table structure has changed and you need a clean slate
-
-#### When to Use
-
-**Use `force_reimport: true` when:**
-- You need to re-sync all data from MongoDB to PostgreSQL
-- Data in PostgreSQL may have been manually modified and needs to be restored
-- You want to ensure PostgreSQL exactly matches MongoDB state
-- Testing or debugging migration logic changes
-
-**Use `truncate_before_import: true` when:**
-- The table structure (columns, types, constraints) has changed
-- You need to remove orphaned or incorrect data that can't be updated
-- Starting fresh is cleaner than trying to merge old and new data
-- The table has structural issues that prevent normal upsert operations
-
-#### YAML Configuration Examples
-
-**Example 1: Force reimport with upsert (preserve existing structure)**
 ```yaml
-users:
-  include_base: true
-  additional_columns:
-    - name: firstname
-      sql_type: VARCHAR(255)
-      nullable: false
-    - name: lastname
-      sql_type: VARCHAR(255)
-      nullable: false
-  export_order: 2
-  force_reimport: true  # Force full reimport, but use upsert logic
-```
-
-**Example 2: Force reimport with truncate (clean slate)**
-```yaml
+# Example: Clean slate migration
 days_contents_links:
-  mongo_collection: days
-  columns:
-    - name: day_id
-      sql_type: VARCHAR
-      nullable: false
-      foreign_key: days(id)
-    - name: content_id
-      sql_type: VARCHAR
-      nullable: false
-      foreign_key: contents(id)
-  export_order: 6
-  import_strategy: days_contents_links
-  force_reimport: true           # Force full reimport
-  truncate_before_import: true   # Clear table first
+  columns: [...]
+  force_reimport: true           # Temporary flag
+  truncate_before_import: true   # Temporary flag
 ```
 
-#### Migration Behavior
+**Workflow:** Add flags → Run migration → Verify → Remove flags → Commit schema
 
-**Normal incremental migration:**
-```
-📅 Step 1: Last migration date: 2024-03-15 10:30:00
-   → Will import records created or updated after this date
-```
+### Global Date Threshold
 
-**With `force_reimport: true` only:**
-```
-🔄 FORCE REIMPORT enabled for this table
-   → Will perform full reimport from MongoDB
-```
-
-**With `force_reimport: true` and `truncate_before_import: true`:**
-```
-🔄 FORCE REIMPORT enabled for this table
-⚠️  TRUNCATE enabled - clearing all existing data
-   → Table days_contents_links truncated successfully
-   → Will perform full reimport from MongoDB
-```
-
-#### Important Notes
-
-- **Temporary setting**: These flags should typically be set temporarily and removed after the forced reimport completes
-- **CASCADE deletion**: `TRUNCATE TABLE ... CASCADE` will also truncate dependent tables if foreign keys exist
-- **Performance**: Force reimport processes all MongoDB documents, which can be slow for large collections
-- **No rollback**: Truncate operations cannot be rolled back in most PostgreSQL configurations
-- **Testing recommended**: Test force reimport on development environment before running on production
-
-#### Workflow Example
-
-When you change a table structure:
-
-1. **Update schema definition** in `config/schemas.yaml`:
-   ```yaml
-   days:
-     include_base: true
-     additional_columns:
-       - name: new_column  # Added new column
-         sql_type: VARCHAR(100)
-     export_order: 5
-     force_reimport: true           # Add this temporarily
-     truncate_before_import: true   # Add this temporarily
-   ```
-
-2. **Run migration**:
-   ```bash
-   python transfert_data.py
-   ```
-
-3. **Verify results** and **remove flags**:
-   ```yaml
-   days:
-     include_base: true
-     additional_columns:
-       - name: new_column
-         sql_type: VARCHAR(100)
-     export_order: 5
-     # force_reimport: true           ← Remove after successful import
-     # truncate_before_import: true   ← Remove after successful import
-   ```
-
-4. **Commit the schema changes** (without the force flags) to version control
-
-### Global Date Threshold Configuration
-
-The migration system supports an optional global date threshold that extends the migration window backward across all tables, useful for recovering lost data or re-syncing from a specific point in time.
-
-#### Configuration
-
-Set via environment variable in `.env`:
+Extends migration window backward across all tables (`.env` file):
 
 ```bash
 GLOBAL_DATE_THRESHOLD=2024-01-01  # ISO 8601 format (YYYY-MM-DD)
 ```
 
-#### Behavior
+**Date Logic Priority:**
+1. `force_reimport=true` → Full reimport (bypasses dates)
+2. Global threshold + table date → Uses earlier date (extends window backward)
+3. Table date only → Normal incremental
+4. Neither → Full migration (first run)
 
-When both global threshold and table-specific last date exist:
-- **Uses the EARLIER date** to extend the sync window backward
-- Example:
-  - Global threshold: 2024-01-01
-  - Table last date: 2024-03-15
-  - Result: Migrates records from 2024-01-01 forward (extends window 2.5 months backward)
+**Use Cases:**
+- Recover lost data from specific date
+- Re-sync after MongoDB corrections
+- Limit historical data on first run
 
-#### Date Logic Priority
+### Special Tables Reference
 
-1. **force_reimport=true**: Bypasses all date logic (full reimport, after_date=None)
-2. **Global threshold + table date**: Uses earlier date (extends window backward)
-3. **Table date only**: Uses table-specific last migration date (normal incremental)
-4. **Neither**: Full migration (first run, after_date=None)
+| Table | MongoDB Source | Key Feature | Strategy | Notes |
+|-------|---------------|-------------|----------|-------|
+| **users_targets** | `users.targets[]`<br>`users.specificity_targets[]`<br>`users.health_targets[]` | Multi-array consolidation with type discrimination | UsersTargetsSmartStrategy ✅ (SmartDiff)<br>UsersTargetsStrategy (Legacy) | Three arrays → one table with `type` column ('basic', 'specificity', 'health')<br>UNIQUE(user_id, target_id, type)<br>**Use smart version for 50x performance** |
+| **user_events** | `users.registered_events[]` | Event registration tracking | UserEventsSmartStrategy ✅ (SmartDiff)<br>UserEventsStrategy (Legacy) | Handles registration AND unregistration<br>UNIQUE(user_id, event_id)<br>**Use smart version for 50x performance** |
+| **users_logbook** | `coachinglogbooks` collection | Deduplication per user per day | UsersLogbookStrategy (DirectTranslation) | Auto-incremented id (not MongoDB _id)<br>Filters documents with `user` field<br>UNIQUE(user_id, day)<br>555,182 of 563,086 docs have user field |
+| **periods** | `periods` collection | Coaching program phases | DirectTranslationStrategy | `number_of_days` → `days_numbers`<br>`coaching` → `coaching_id` |
+| **days** | `days` collection | Individual coaching days | DirectTranslationStrategy | `is_success` → `completed`<br>`date` → `day`<br>`userQuizz` → `user_quizz_id` |
+| **days_contents_links** | `days.contents[]` | Educational content per day | DaysContentsLinksStrategy (Delete+Insert) | UNIQUE(day_id, content_id) |
+| **days_logbooks_links** | `days.main_logbooks[]` | Logbook entries per day | DaysLogbooksLinksStrategy (Delete+Insert) | UNIQUE(day_id, logbook_id) |
 
-#### Logging
+## Matomo Analytics Sync
 
-When enabled:
-```
-✓ Global date threshold loaded: 2024-01-01
-🌐 Global date threshold active: 2024-01-01
+Standalone sync process for Matomo analytics (MariaDB → PostgreSQL):
 
-📅 Step 1: Last migration date: 2024-03-15 10:30:00
-   → Global threshold is earlier; extending sync window backward
-```
+**Tables:**
+- `matomo_log_visit` - Visitor sessions (PK: idvisit, sync: visit_last_action_time)
+- `matomo_log_link_visit_action` - Page views (PK: idlink_va, sync: server_time)
 
-#### Common Use Cases
+**Sync Strategy:**
+- Incremental based on timestamp columns
+- `ON CONFLICT DO UPDATE` on primary keys
+- Batch size: 5,000 rows
+- Binary data conversion: BLOB → BYTEA
 
-**Scenario 1: Recover lost data (one-time sync)**
+**Configuration:**
 ```bash
-GLOBAL_DATE_THRESHOLD=2024-01-01  # Recovers data from Jan 1
-# Run migration once, then remove GLOBAL_DATE_THRESHOLD
+MATOMO_SOURCE=local|remote  # Default: local
+MATOMO_HOST=localhost
+MATOMO_PORT=3306
+MATOMO_DATABASE=matomo
+MATOMO_USER=root
+MATOMO_PASSWORD=***
 ```
 
-**Scenario 2: Re-sync from checkpoint**
+## Configuration
+
+### Environment Variables (.env)
+
+**Transfer Direction:**
 ```bash
-GLOBAL_DATE_THRESHOLD=2024-06-01  # Extend all tables back to June
-# Useful after data corrections in MongoDB
+TRANSFER_SOURCE=local|remote        # MongoDB source
+TRANSFER_DESTINATION=local|remote   # PostgreSQL destination
 ```
 
-**Scenario 3: Limit historical data on first run**
+**Local MongoDB:**
 ```bash
-GLOBAL_DATE_THRESHOLD=2023-01-01  # Don't sync older than this
-# Prevents excessive historical data on initial migration
+MONGODB_URL=mongodb://localhost:27017
+MONGODB_DATABASE=your_db_name
 ```
 
-#### Format Requirements
-
-- **Valid**: `YYYY-MM-DD` (e.g., `2024-01-15`, `2023-12-31`)
-- **Invalid**: `2024/01/15`, `01-01-2024`, `2024-01-15 10:00:00`
-- **Behavior on invalid format**: Logs warning, falls back to table-specific dates
-
-#### Backward Compatibility
-
-- If `GLOBAL_DATE_THRESHOLD` is not set or empty: No change to behavior
-- Existing migrations continue working unchanged
-- No database schema changes required
-
-### Users Targets Feature
-
-The `users_targets` table represents a many-to-many relationship between users and their health/wellness targets. Unlike simple array extraction, this feature consolidates three different MongoDB arrays into a single normalized table.
-
-#### MongoDB Structure
-In MongoDB, users have three separate arrays for different target categories:
-```javascript
-{
-  _id: ObjectId("..."),
-  targets: [ObjectId("target1"), ObjectId("target2")],           // Basic targets
-  specificity_targets: [ObjectId("target3")],                    // Specificity targets
-  health_targets: [ObjectId("target4"), ObjectId("target5")]     // Health targets
-}
-```
-
-#### PostgreSQL Structure
-```sql
-CREATE TABLE users_targets (
-  user_id VARCHAR NOT NULL REFERENCES users(id),
-  target_id VARCHAR NOT NULL REFERENCES targets(id),
-  type VARCHAR(50) NOT NULL,  -- 'basic', 'specificity', or 'health'
-  created_at TIMESTAMP NOT NULL,
-  updated_at TIMESTAMP NOT NULL,
-  UNIQUE(user_id, target_id, type)
-);
-```
-
-#### Incremental Sync Behavior
-For efficiency, the users_targets migration uses a delete-and-insert pattern:
-1. **Query**: Find users with any target changes after `after_date`
-2. **Delete**: Remove ALL existing relationships for changed users
-3. **Insert**: Insert fresh relationships from all three arrays
-4. **Benefit**: Handles target additions, removals, and type changes correctly
-
-This approach ensures data consistency without complex diff logic while maintaining good performance through batch processing.
-
-### User Events Feature
-
-The `user_events` table represents a many-to-many relationship between users and events they are registered for.
-
-#### MongoDB Structure
-In MongoDB, users have an array of registered events:
-```javascript
-{
-  _id: ObjectId("..."),
-  registered_events: [
-    ObjectId("event1"),
-    ObjectId("event2"),
-    ObjectId("event3")
-  ]
-}
-```
-
-#### PostgreSQL Structure
-```sql
-CREATE TABLE user_events (
-  user_id VARCHAR NOT NULL REFERENCES users(id),
-  event_id VARCHAR NOT NULL REFERENCES events(id),
-  created_at TIMESTAMP NOT NULL,
-  updated_at TIMESTAMP NOT NULL,
-  UNIQUE(user_id, event_id)
-);
-```
-
-#### Incremental Sync Behavior
-The user_events migration uses the same delete-and-insert pattern as users_targets:
-1. **Query**: Find users with changes to `registered_events` array after `after_date`
-2. **Delete**: Remove ALL existing event relationships for changed users
-3. **Insert**: Insert fresh relationships from the `registered_events` array
-4. **Benefit**: Handles event registration AND unregistration correctly
-
-**Why delete-and-insert?**
-- When a user unregisters from an event, it's removed from the MongoDB array
-- Without deletion, the old relationship would remain orphaned in PostgreSQL
-- This pattern ensures PostgreSQL perfectly mirrors MongoDB's current state
-
-### Users Logbook Feature
-
-The `users_logbook` table represents a deduplicated tracking of coaching logbook entries per user per day. This table consolidates potentially multiple MongoDB documents for the same user-day combination into a single PostgreSQL row.
-
-#### MongoDB Structure
-In MongoDB, the `coachinglogbooks` collection has entries with:
-```javascript
-{
-  _id: ObjectId("..."),
-  day: ISODate("2024-03-06T23:00:00Z"),
-  user: ObjectId("6418d6af3015567c5af862ee"),  // Some documents may not have this field
-  logbook: ObjectId("65eb4414a1a7f677042c3a62"),
-  coaching: ObjectId("64ef0616b99d86061670228a"),
-  creation_date: ISODate("2024-03-08T17:00:04.143Z"),
-  update_date: ISODate("2024-03-08T17:00:04.143Z")
-}
-```
-
-**Important characteristics:**
-- Not all documents have a `user` field (555,182 out of 563,086 documents have it)
-- Multiple documents can exist for the same user+day combination in MongoDB
-- The original MongoDB `_id` is NOT mapped to PostgreSQL (PostgreSQL generates its own sequential `id`)
-
-#### PostgreSQL Structure
-```sql
-CREATE TABLE users_logbook (
-  id SERIAL PRIMARY KEY,
-  user_id VARCHAR NOT NULL REFERENCES users(id),
-  day DATE NOT NULL,
-  created_at TIMESTAMP NOT NULL,
-  updated_at TIMESTAMP NOT NULL,
-  UNIQUE(user_id, day)
-);
-```
-
-**Key design decisions:**
-- **Auto-incremented `id` column**: PostgreSQL-generated sequential primary key (unlike other tables that use MongoDB's `_id`)
-- **Unique constraint on (user_id, day)**: Ensures only one entry per user per day
-- **Automatic deduplication**: Multiple MongoDB documents for same user+day → single PostgreSQL row
-
-#### Custom Import Strategy
-
-Uses a custom `UsersLogbookStrategy` (extends `DirectTranslationStrategy`):
-- **Filtering**: Only processes documents where `user` field exists and is not null
-- **Conflict resolution**: `ON CONFLICT (user_id, day) DO UPDATE SET created_at, updated_at`
-- **Deduplication**: If multiple MongoDB documents have same (user, day), the last one processed updates the PostgreSQL row
-
-#### Migration Behavior
-
-**Full import:**
-```
-555,182 MongoDB documents (with user field) → PostgreSQL rows (deduplicated by user_id+day)
-```
-
-**Incremental import:**
-- Filters documents by: `user IS NOT NULL AND (creation_date >= after_date OR update_date >= after_date)`
-- Updates existing rows with latest timestamps
-- Inserts new user-day combinations
-
-**Example scenario:**
-- MongoDB has 3 documents: user=X, day=2024-03-06 (created at different times)
-- PostgreSQL will have 1 row: user=X, day=2024-03-06 (with latest timestamps)
-- On subsequent migrations, if any of these 3 documents are updated, the PostgreSQL row updates
-
-#### Use Case
-This table provides a normalized view of which days each user has logbook entries, regardless of how many individual logbook records exist for that day. Useful for:
-- Tracking user activity/engagement by day
-- Identifying active coaching days
-- Calculating user streaks or patterns
-- Efficient queries for "days with entries" without counting duplicate logbook records
-
-### Coaching Periods and Days Feature
-
-The coaching system tracks periods within a coaching program and individual days within those periods. This feature includes three tables that work together to manage coaching progress.
-
-#### Periods Table
-
-Represents distinct phases or periods within a coaching program.
-
-**MongoDB Structure (periods collection):**
-```javascript
-{
-  _id: ObjectId("..."),
-  number_of_days: 14,
-  coaching: ObjectId("64ef0616b99d86061670228a"),
-  order: 1,
-  status: "active",
-  creation_date: ISODate("2024-03-01T10:00:00Z"),
-  update_date: ISODate("2024-03-01T10:00:00Z")
-}
-```
-
-**PostgreSQL Structure:**
-```sql
-CREATE TABLE periods (
-  id VARCHAR PRIMARY KEY,
-  created_at TIMESTAMP NOT NULL,
-  updated_at TIMESTAMP NOT NULL,
-  days_numbers SMALLINT NOT NULL,
-  coaching_id VARCHAR REFERENCES coachings(id),
-  order SMALLINT NOT NULL,
-  status VARCHAR(100) NOT NULL
-);
-```
-
-**Migration behavior:**
-- Uses DirectTranslationStrategy (standard 1:1 mapping)
-- `number_of_days` → `days_numbers` field mapping
-- `coaching` → `coaching_id` foreign key reference
-- Export order: 4 (after coachings at order 3)
-
-#### Days Table
-
-Represents individual days within coaching periods, tracking completion status and associated quizzes.
-
-**MongoDB Structure (days collection):**
-```javascript
-{
-  _id: ObjectId("..."),
-  period: ObjectId("65e8f2a1b99d86061670234a"),
-  is_success: true,
-  date: ISODate("2024-03-06T00:00:00Z"),
-  userQuizz: ObjectId("65eb4414a1a7f677042c3a62"),
-  contents: [ObjectId("content1"), ObjectId("content2")],
-  main_logbooks: [ObjectId("logbook1"), ObjectId("logbook2")],
-  creation_date: ISODate("2024-03-06T08:00:00Z"),
-  update_date: ISODate("2024-03-06T20:00:00Z")
-}
-```
-
-**PostgreSQL Structure:**
-```sql
-CREATE TABLE days (
-  id VARCHAR PRIMARY KEY,
-  created_at TIMESTAMP NOT NULL,
-  updated_at TIMESTAMP NOT NULL,
-  period_id VARCHAR NOT NULL REFERENCES periods(id),
-  completed BOOLEAN NOT NULL,
-  day DATE NOT NULL,
-  user_quizz_id VARCHAR REFERENCES users_quizzs(id)
-);
-```
-
-**Key design decisions:**
-- `is_success` → `completed` (boolean field for day completion status)
-- `date` → `day` (DATE type for the specific day)
-- `period` → `period_id` foreign key to periods table
-- `userQuizz` → `user_quizz_id` optional foreign key to users_quizzs
-- Array fields (`contents`, `main_logbooks`) extracted to separate link tables
-
-**Migration behavior:**
-- Uses DirectTranslationStrategy with field mappings
-- Export order: 5 (after periods at order 4)
-
-#### Days Link Tables
-
-Two relationship tables extract array fields from the days collection:
-
-**1. days_contents_links**
-
-Tracks which educational contents are associated with each coaching day.
-
-**MongoDB Source:** `days.contents[]` array
-
-**PostgreSQL Structure:**
-```sql
-CREATE TABLE days_contents_links (
-  day_id VARCHAR NOT NULL REFERENCES days(id),
-  content_id VARCHAR NOT NULL REFERENCES contents(id),
-  created_at TIMESTAMP NOT NULL,
-  updated_at TIMESTAMP NOT NULL,
-  UNIQUE(day_id, content_id)
-);
-```
-
-**2. days_logbooks_links**
-
-Tracks which main logbooks (user quizzes) are linked to each coaching day.
-
-**MongoDB Source:** `days.main_logbooks[]` array
-
-**PostgreSQL Structure:**
-```sql
-CREATE TABLE days_logbooks_links (
-  day_id VARCHAR NOT NULL REFERENCES days(id),
-  logbook_id VARCHAR NOT NULL REFERENCES users_quizzs(id),
-  created_at TIMESTAMP NOT NULL,
-  updated_at TIMESTAMP NOT NULL,
-  UNIQUE(day_id, logbook_id)
-);
-```
-
-#### Custom Import Strategies
-
-Both link tables use custom `DeleteAndInsertStrategy` implementations defined in `src/migration/strategies/coaching_strategies.py`:
-
-**DaysContentsLinksStrategy:**
-- Queries days documents with non-empty `contents` array
-- Extracts day-content relationships
-- Uses delete-and-insert pattern keyed on `day_id`
-- Handles both ObjectId and embedded document formats
-
-**DaysLogbooksLinksStrategy:**
-- Queries days documents with non-empty `main_logbooks` array
-- Extracts day-logbook relationships
-- Uses delete-and-insert pattern keyed on `day_id`
-- Handles both ObjectId and embedded document formats
-
-#### Incremental Sync Behavior
-
-**Days table:**
-- Standard incremental sync based on creation_date/update_date
-- Updates all fields when document changes
-
-**Link tables:**
-1. **Query**: Find days with array changes after `after_date`
-2. **Delete**: Remove ALL existing links for changed days
-3. **Insert**: Insert fresh relationships from current array state
-4. **Benefit**: Correctly handles both additions and removals from arrays
-
-**Why delete-and-insert for link tables?**
-- When content/logbook is removed from a day's array in MongoDB, it disappears from the document
-- Upsert strategies can't detect these removals
-- Delete-and-insert ensures PostgreSQL perfectly mirrors MongoDB's current state
-
-#### Use Cases
-
-**Periods:**
-- Track distinct phases in coaching programs (e.g., "Week 1", "Month 1")
-- Organize coaching timeline into manageable segments
-- Monitor period completion and status
-
-**Days:**
-- Track daily progress within coaching periods
-- Record completion status for each day
-- Link specific quizzes/assessments to individual days
-- Provide granular coaching progress tracking
-
-**Link tables:**
-- Associate educational content with specific coaching days
-- Link logbook entries/quizzes to days for tracking
-- Enable queries like "what content was viewed on this day?"
-- Support analytics on content engagement within coaching programs
-
-## Matomo Analytics Synchronization
-
-The project includes a separate synchronization system for Matomo analytics data stored in MariaDB. This allows combining user analytics with application data in a unified PostgreSQL database.
-
-### Overview
-
-Unlike the MongoDB to PostgreSQL migration system, Matomo sync is a standalone process that:
-- Reads analytics data from Matomo's MariaDB database
-- Transforms and loads it into PostgreSQL tables
-- Supports incremental updates based on timestamps
-- Operates independently from the main MongoDB migration
-
-### Matomo Tables
-
-The system synchronizes two core Matomo tracking tables:
-
-#### matomo_log_visit
-
-Stores visitor session data including:
-- Visit identification (`idvisit`, `idvisitor`, `idsite`)
-- Session timestamps (`visit_first_action_time`, `visit_last_action_time`)
-- User information (`user_id`, `visitor_returning`, `visitor_count_visits`)
-- Visit metrics (`visit_total_actions`, `visit_total_interactions`, `visit_total_searches`)
-- Referrer information (`referer_type`, `referer_name`, `referer_url`, `referer_keyword`)
-- Technical details (`config_os`, `config_browser_name`, `config_browser_version`)
-- Geographic data (`location_country`, `location_city`, `location_latitude`, `location_longitude`)
-
-**Primary Key:** `idvisit` (BIGINT)
-
-**Incremental Sync Column:** `visit_last_action_time` (TIMESTAMP)
-
-#### matomo_log_link_visit_action
-
-Stores individual page views and user actions including:
-- Action identification (`idlink_va`, `idvisit`, `idvisitor`, `idsite`)
-- Page tracking (`idaction_url`, `idaction_name`, `idpageview`)
-- Referrers (`idaction_url_ref`, `idaction_name_ref`)
-- Time tracking (`server_time`, `time_spent_ref_action`, `interaction_position`)
-- Custom variables (`custom_var_k1-5`, `custom_var_v1-5`, `custom_float`)
-
-**Primary Key:** `idlink_va` (BIGINT)
-
-**Incremental Sync Column:** `server_time` (TIMESTAMP)
-
-### Data Type Conversions
-
-The synchronization handles MariaDB to PostgreSQL type conversions:
-
-| MariaDB Type | PostgreSQL Type | Notes |
-|--------------|-----------------|-------|
-| BIGINT | BIGINT | Direct mapping |
-| INT | INTEGER | Direct mapping |
-| BINARY/VARBINARY | BYTEA | Uses psycopg2.Binary() for conversion |
-| VARCHAR | VARCHAR | Direct mapping with length preserved |
-| TEXT | TEXT | Direct mapping |
-| DATETIME/TIMESTAMP | TIMESTAMP | Direct mapping |
-| DECIMAL | DECIMAL | Precision preserved |
-| DOUBLE | DOUBLE PRECISION | Direct mapping |
-
-### Sync Strategy
-
-**Incremental Update Pattern:**
-1. Query PostgreSQL for the maximum timestamp in the table
-2. Query MariaDB for records with timestamps greater than the last sync
-3. Insert/update records using `ON CONFLICT DO UPDATE` on primary key
-4. All columns are updated on conflict (upsert behavior)
-
-**Benefits:**
-- Only fetches new/updated analytics data since last sync
-- Efficient for large historical datasets
-- Idempotent - can be run multiple times safely
-- No data loss on repeated runs
-
-**Batch Processing:**
-- Default batch size: 5,000 rows
-- Uses `psycopg2.extras.execute_batch()` for efficiency
-- Automatic error handling with individual row retry on batch failure
-- Progress tracking with real-time console output
-
-### Configuration
-
-Matomo sync uses separate environment variables from the main MongoDB migration:
-
-**Source Control:**
-- `MATOMO_SOURCE=local` or `remote` (default: local)
-- When `remote`, uses SSH tunnel with same credentials as MongoDB/PostgreSQL
-
-**Connection Settings:**
-- Local: `MATOMO_HOST`, `MATOMO_PORT`, `MATOMO_DATABASE`, `MATOMO_USER`, `MATOMO_PASSWORD`
-- PostgreSQL destination uses same configuration as main migration
-
-### Running Matomo Sync
-
+**Local PostgreSQL:**
 ```bash
-# Sync Matomo data from MariaDB to PostgreSQL
-python sync_matomo_data.py
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DATABASE=your_db_name
+POSTGRES_USER=your_user
+POSTGRES_PASSWORD=your_password
 ```
 
-The sync process:
-1. Loads table schemas from `config/matomo_schemas.yaml`
-2. Connects to MariaDB (local or remote via SSH tunnel)
-3. Connects to PostgreSQL (local or remote via SSH tunnel)
-4. Creates tables if they don't exist
-5. Performs incremental sync for each table
-6. Reports sync statistics and any errors
+**Remote Access (SSH Tunnel):**
+```bash
+REMOTE_SERVER_URL=your_server_ip
+REMOTE_SERVER_USER=ssh_user
+REMOTE_SERVER_PASSWORD=ssh_password
+REMOTE_MONGODB_URL=mongodb://localhost:27017
+REMOTE_MONGODB_DATABASE=remote_db_name
+REMOTE_POSTGRES_PORT=5432
+REMOTE_POSTGRES_DATABASE=remote_db_name
+REMOTE_POSTGRES_USER=remote_user
+REMOTE_POSTGRES_PASSWORD=remote_password
+```
 
-### Use Cases
+**Matomo:**
+```bash
+MATOMO_SOURCE=local|remote
+MATOMO_HOST=localhost
+MATOMO_PORT=3306
+MATOMO_DATABASE=matomo
+MATOMO_USER=root
+MATOMO_PASSWORD=matomo_password
+```
 
-**Combined Analytics:**
-- Join Matomo visit data with user accounts for engagement analysis
-- Track user behavior across coaching programs
-- Correlate page views with quiz completions or content consumption
+**Optional:**
+```bash
+GLOBAL_DATE_THRESHOLD=2024-01-01  # Extend sync window backward
+```
 
-**Unified Reporting:**
-- Single PostgreSQL database for all application and analytics data
-- Simplified reporting without cross-database queries
-- Consistent backup and replication strategy
+### Transfer Scenarios
 
-**Data Warehouse:**
-- Consolidate multiple data sources into PostgreSQL
-- Enable advanced analytics with tools like Metabase, Tableau, or custom dashboards
-- Historical trend analysis with time-series queries
+| Source | Destination | Use Case |
+|--------|-------------|----------|
+| local | local | Development (default) |
+| local | remote | Push to production |
+| remote | local | Pull production data |
+| remote | remote | Production migration |
 
-### Export Order & Dependencies
-Migration follows strict dependency order:
+## Common Development Tasks
 
-1. **Order 1**: Base entities (no dependencies)
-   - `ingredients`, `appointment_types`, `companies`, `offers`, `categories`, `targets`, `recipes`, `quizzs`, `quizzs_questions`, `contents`
+### Adding New Entity Migration
 
-2. **Order 2**: Core entities with simple foreign keys
-   - `events`, `users`, `menus`, `quizzs_links_questions`
+1. **Define schema** in `config/schemas.yaml`:
+```yaml
+notifications:
+  include_base: true  # Adds id, created_at, updated_at
+  additional_columns:
+    - name: user_id
+      sql_type: VARCHAR
+      nullable: false
+      foreign_key: users(id)
+      mongo_field: user  # MongoDB field name
+    - name: title
+      sql_type: VARCHAR(255)
+    - name: read
+      sql_type: BOOLEAN
+      default: false
+  export_order: 3  # After users (order 2)
+```
 
-3. **Order 3**: Relationship tables and core arrays
-   - `user_events`, `users_targets`, `messages`, `coachings`, `users_logbook`, `menu_recipes`, `users_quizzs`, `users_quizzs_questions`, `users_contents_reads`
+2. **Run migration**: `python transfert_data.py`
 
-4. **Order 4**: Complex dependent data
-   - `appointments`, `periods`, `items`, `users_quizzs_links_questions`
+3. **For complex cases**, create custom strategy in `src/migration/strategies/`:
+```python
+from src.migration.import_strategies import DirectTranslationStrategy
 
-5. **Order 5**: Coaching days
-   - `days`
+class NotificationsStrategy(DirectTranslationStrategy):
+    def transform_document(self, doc):
+        doc = super().transform_document(doc)
+        # Custom transformations
+        return doc
+```
 
-6. **Order 6**: Day relationship arrays
-   - `days_contents_links`, `days_logbooks_links`
+4. **Reference strategy** in schemas.yaml:
+```yaml
+notifications:
+  # ... columns ...
+  import_strategy: notifications  # Matches class name pattern
+```
+
+### Modifying Import Logic
+
+- **Core export logic**: Edit `src/migration/data_export.py`
+- **Custom strategies**: Add to `src/migration/strategies/` by domain:
+  - `user_strategies.py` - User events, targets
+  - `quiz_strategies.py` - Quiz relationships
+  - `content_strategies.py` - Content reads
+  - `coaching_strategies.py` - Coaching days, links
+
+### Using SmartDiffStrategy for Relationship Tables
+
+**When to use SmartDiffStrategy:**
+- Relationship tables with MongoDB arrays (e.g., user_events, users_targets)
+- Typical changes are small (user adds/removes 1-2 items)
+- Need to handle both additions AND removals correctly
+- Want optimal performance for incremental migrations
+
+**Migrating from DeleteAndInsertStrategy to SmartDiffStrategy:**
+
+1. **Update strategy factory** in `src/migration/strategies/user_strategies.py`:
+```python
+# Change from:
+# from data_export import get_strategy
+# strategy = create_user_events_strategy()  # Uses DeleteAndInsertStrategy
+
+# To:
+strategy = create_user_events_smart_strategy()  # Uses SmartDiffStrategy
+```
+
+2. **No schema changes needed** - SmartDiffStrategy works with existing table structures
+
+3. **Configure threshold** (optional):
+```python
+class MySmartStrategy(SmartDiffStrategy):
+    DIFF_THRESHOLD = 0.5  # Use diff-based for ≤50% changes (default: 0.3)
+```
+
+**Implementation Example:**
+
+See `user_strategies.py` for complete examples:
+- `create_user_events_smart_strategy()` - Simple relationship (user_id, event_id)
+- `create_users_targets_smart_strategy()` - Composite key (user_id, target_id, type)
+
+**Key methods to implement:**
+```python
+def extract_current_items(self, document) -> set:
+    """Return set of tuples: {('child_id1',), ('child_id2',)}"""
+
+def _item_to_sql_values(self, parent_id: str, item: tuple):
+    """Convert tuple to (values, columns) for SQL INSERT"""
+
+def get_child_column_name(self) -> str:
+    """Return column name for child ID (e.g., 'event_id')"""
+
+def get_parent_column_name(self) -> str:
+    """Return column name for parent ID (e.g., 'user_id')"""
+
+def get_additional_columns(self) -> list:
+    """Optional: Return ['type'] for composite keys"""
+```
+
+### Troubleshooting
+
+**Connection Issues:**
+- Check `.env` file configuration
+- Verify services running: `mongod --version`, `psql --version`
+- For remote: Check SSH tunnel and firewall rules
+
+**Foreign Key Violations:**
+- Verify `export_order` in schemas.yaml
+- Parent tables must migrate before children
+
+**Memory Errors:**
+- Reduce batch size in data_export.py
+- Avoid force_reimport on very large tables
+
+**Missing Records:**
+- Check GLOBAL_DATE_THRESHOLD setting
+- Review date filtering logic
+- Check logs for filtered/skipped records
 
 ## Dependencies
 
@@ -946,155 +393,8 @@ sshtunnel==0.4.0
 paramiko==3.4.0
 ```
 
-## Configuration
-
-### Transfer Mode Configuration
-
-The migration tool supports flexible source and destination configuration through environment variables:
-
-**Transfer Direction Settings:**
-- `TRANSFER_SOURCE` - Where to read MongoDB data from: `"local"` (default) or `"remote"`
-- `TRANSFER_DESTINATION` - Where to write PostgreSQL data to: `"local"` (default) or `"remote"`
-
-**Common Transfer Scenarios:**
-
-1. **Local → Local** (Default, Development)
-   ```bash
-   TRANSFER_SOURCE=local
-   TRANSFER_DESTINATION=local
-   ```
-   - Reads from local MongoDB (MONGODB_URL)
-   - Writes to local PostgreSQL (POSTGRES_*)
-
-2. **Local → Remote** (Push local data to production)
-   ```bash
-   TRANSFER_SOURCE=local
-   TRANSFER_DESTINATION=remote
-   ```
-   - Reads from local MongoDB
-   - Writes to production PostgreSQL via SSH tunnel
-
-3. **Remote → Local** (Pull production data locally)
-   ```bash
-   TRANSFER_SOURCE=remote
-   TRANSFER_DESTINATION=local
-   ```
-   - Reads from production MongoDB via SSH tunnel
-   - Writes to local PostgreSQL
-
-4. **Remote → Remote** (Production migration)
-   ```bash
-   TRANSFER_SOURCE=remote
-   TRANSFER_DESTINATION=remote
-   ```
-   - Reads from production MongoDB via SSH tunnel
-   - Writes to production PostgreSQL via SSH tunnel
-
-### SSH Tunnel Configuration
-
-When using `remote` mode, the system automatically establishes SSH tunnels using these credentials:
-
-**SSH Server:**
-- `REMOTE_SERVER_URL` - Remote server IP/hostname
-- `REMOTE_SERVER_USER` - SSH username
-- `REMOTE_SERVER_PASSWORD` - SSH password
-
-**Remote MongoDB (when TRANSFER_SOURCE=remote):**
-- `REMOTE_MONGODB_URL` - MongoDB URL on remote server (typically mongodb://localhost:27017)
-- `REMOTE_MONGODB_DATABASE` - Remote MongoDB database name
-
-**Remote PostgreSQL (when TRANSFER_DESTINATION=remote):**
-- `REMOTE_POSTGRES_PORT` - PostgreSQL port on remote server (default: 5432)
-- `REMOTE_POSTGRES_DATABASE` - Remote PostgreSQL database name
-- `REMOTE_POSTGRES_USER` - Remote PostgreSQL username
-- `REMOTE_POSTGRES_PASSWORD` - Remote PostgreSQL password
-
-### Local Database Configuration
-
-**Local MongoDB:**
-- `MONGODB_URL` - MongoDB connection string (default: mongodb://localhost:27017)
-- `MONGODB_DATABASE` - MongoDB database name (default: default)
-
-**Local PostgreSQL:**
-- `POSTGRES_HOST` - PostgreSQL host (default: localhost)
-- `POSTGRES_PORT` - PostgreSQL port (default: 5432)
-- `POSTGRES_DATABASE` - PostgreSQL database name
-- `POSTGRES_USER` - PostgreSQL username
-- `POSTGRES_PASSWORD` - PostgreSQL password
-
-### Matomo Analytics Configuration
-
-The tool supports synchronizing Matomo analytics data from MariaDB to PostgreSQL for unified analytics and reporting.
-
-**Matomo Source Configuration:**
-- `MATOMO_SOURCE` - Where to read Matomo data from: `"local"` (default) or `"remote"`
-- `MATOMO_HOST` - MariaDB host (default: localhost)
-- `MATOMO_PORT` - MariaDB port (default: 3306)
-- `MATOMO_DATABASE` - Matomo database name (default: matomo)
-- `MATOMO_USER` - MariaDB username (default: root)
-- `MATOMO_PASSWORD` - MariaDB password
-
-**Remote Matomo (when MATOMO_SOURCE=remote):**
-- Uses the same SSH tunnel configuration as MongoDB/PostgreSQL (REMOTE_SERVER_*)
-- Connects to remote MariaDB via SSH tunnel
-- Useful for syncing production Matomo data to local PostgreSQL for analysis
-
-**Synced Tables:**
-- `matomo_log_visit` - Visitor session tracking data
-- `matomo_log_link_visit_action` - Individual page views and user actions
-
-**Sync Behavior:**
-- Incremental sync based on timestamps (visit_last_action_time, server_time)
-- Uses ON CONFLICT DO UPDATE for automatic upserts
-- Handles binary data conversion (BLOB → BYTEA)
-- Batch processing for efficient large dataset handling
-
-## Usage
-
-### Full Migration
-```bash
-python transfert_data.py
-```
-
-### Matomo Analytics Sync
-```bash
-python sync_matomo_data.py
-```
-
-### Database Refresh
-```bash
-python refresh_mongo_db.py
-python refresh_postgres_db.py
-```
-
-### Check Differences
-```bash
-python check_db_differences.py
-```
-
 ## Testing
+
 ```bash
-# Run tests from project root
 python -m pytest tests/
 ```
-
-## Common Development Tasks
-
-### Adding New Entity Migration
-1. Define schema in `config/schemas.yaml`
-2. Set `export_order` and any `import_strategy` name
-3. For complex data, create custom import strategy
-
-### Modifying Import Logic
-- Edit `src/migration/data_export.py` for core export logic
-- Add custom strategies in `src/migration/strategies/` and reference them from schemas
-- Strategy organization by domain:
-  - `user_strategies.py` - User-focused strategies (user_events, users_targets)
-  - `quiz_strategies.py` - Quiz-focused strategies (quizzs_links_questions, users_quizzs_links_questions)
-  - `content_strategies.py` - Content-focused strategies (users_contents_reads)
-  - `coaching_strategies.py` - Coaching-focused strategies (days_contents_links, days_logbooks_links)
-
-### Database Connection Issues
-- Check environment variables in `.env` file
-- Verify MongoDB and PostgreSQL services are running
-- Review connection settings in `src/connections/`

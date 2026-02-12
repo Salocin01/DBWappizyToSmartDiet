@@ -207,6 +207,35 @@ tables:
       assessment_quizz: assessment_id
     export_order: 3
 
+  coaching_reasons:
+    mongo_collection: coachings
+    columns:
+      - name: coaching_id
+        sql_type: VARCHAR
+        nullable: false
+        foreign_key: coachings(id)
+      - name: target_id
+        sql_type: VARCHAR
+        nullable: false
+        foreign_key: targets(id)
+      - name: type
+        sql_type: VARCHAR(50)
+        nullable: false
+      - name: created_at
+        sql_type: TIMESTAMP
+        nullable: false
+      - name: updated_at
+        sql_type: TIMESTAMP
+        nullable: false
+    explicit_mappings:
+      creation_date: created_at
+      update_date: updated_at
+    export_order: 4
+    import_strategy: coaching_reasons
+    unique_constraints:
+      - [coaching_id, target_id, type]
+    force_reimport: true 
+
   users_logbooks:
     include_base: true
     mongo_collection: coachinglogbooks

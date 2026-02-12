@@ -20,6 +20,8 @@ from src.migration.strategies.content_strategies import (
 from src.migration.strategies.coaching_strategies import (
     create_days_contents_links_strategy,
     create_days_logbooks_links_strategy,
+    create_coaching_reasons_strategy,
+    create_coaching_reasons_smart_strategy,
 )
 
 DEFAULT_SCHEMA_PATH = os.path.abspath(
@@ -32,10 +34,12 @@ STRATEGY_FACTORIES = {
     # Smart strategies (recommended) - use diff-based optimization
     "user_events": create_user_events_smart_strategy,
     "users_targets": create_users_targets_smart_strategy,
+    "coaching_reasons": create_coaching_reasons_smart_strategy,
 
     # Legacy strategies (fallback) - full delete-and-insert pattern
     "user_events_legacy": create_user_events_strategy,
     "users_targets_legacy": create_users_targets_strategy,
+    "coaching_reasons_legacy": create_coaching_reasons_strategy,
 
     # Other relationship strategies (TODO: migrate to SmartDiffStrategy)
     "quizzs_links_questions": create_quizzs_links_questions_strategy,

@@ -62,6 +62,7 @@ ImportStrategy (ABC)
 ├── DeleteAndInsertStrategy (Legacy - inefficient)
 │   ├── UserEventsStrategy (legacy)
 │   ├── UsersTargetsStrategy (legacy)
+│   ├── CoachingReasonsStrategy (legacy)
 │   ├── QuizzsLinksQuestionsStrategy
 │   ├── UsersQuizzsLinksQuestionsStrategy
 │   ├── UsersContentsReadsStrategy
@@ -69,7 +70,8 @@ ImportStrategy (ABC)
 │   └── DaysLogbooksLinksStrategy
 └── SmartDiffStrategy (✅ RECOMMENDED for relationships)
     ├── UserEventsSmartStrategy
-    └── UsersTargetsSmartStrategy
+    ├── UsersTargetsSmartStrategy
+    └── CoachingReasonsSmartStrategy
 ```
 
 **Performance Comparison:**
@@ -164,6 +166,7 @@ GLOBAL_DATE_THRESHOLD=2024-01-01  # ISO 8601 format (YYYY-MM-DD)
 | Table | MongoDB Source | Key Feature | Strategy | Notes |
 |-------|---------------|-------------|----------|-------|
 | **users_targets** | `users.targets[]`<br>`users.specificity_targets[]`<br>`users.health_targets[]` | Multi-array consolidation with type discrimination | UsersTargetsSmartStrategy ✅ (SmartDiff)<br>UsersTargetsStrategy (Legacy) | Three arrays → one table with `type` column ('basic', 'specificity', 'health')<br>UNIQUE(user_id, target_id, type)<br>**Use smart version for 50x performance** |
+| **coaching_reasons** | `coachings.reasons[]`<br>`coachings.health_reasons[]` | Multi-array consolidation with type discrimination | CoachingReasonsSmartStrategy ✅ (SmartDiff)<br>CoachingReasonsStrategy (Legacy) | Two arrays → one table with `type` column ('reason', 'health_reason')<br>Links coachings to targets<br>UNIQUE(coaching_id, target_id, type)<br>**Use smart version for optimal performance** |
 | **user_events** | `users.registered_events[]` | Event registration tracking | UserEventsSmartStrategy ✅ (SmartDiff)<br>UserEventsStrategy (Legacy) | Handles registration AND unregistration<br>UNIQUE(user_id, event_id)<br>**Use smart version for 50x performance** |
 | **users_logbook** | `coachinglogbooks` collection | Deduplication per user per day | UsersLogbookStrategy (DirectTranslation) | Auto-incremented id (not MongoDB _id)<br>Filters documents with `user` field<br>UNIQUE(user_id, day)<br>555,182 of 563,086 docs have user field |
 | **periods** | `periods` collection | Coaching program phases | DirectTranslationStrategy | `number_of_days` → `days_numbers`<br>`coaching` → `coaching_id` |
@@ -338,9 +341,10 @@ class MySmartStrategy(SmartDiffStrategy):
 
 **Implementation Example:**
 
-See `user_strategies.py` for complete examples:
-- `create_user_events_smart_strategy()` - Simple relationship (user_id, event_id)
-- `create_users_targets_smart_strategy()` - Composite key (user_id, target_id, type)
+See strategy files for complete examples:
+- `create_user_events_smart_strategy()` - Simple relationship (user_id, event_id) in `user_strategies.py`
+- `create_users_targets_smart_strategy()` - Composite key (user_id, target_id, type) in `user_strategies.py`
+- `create_coaching_reasons_smart_strategy()` - Composite key (coaching_id, target_id, type) in `coaching_strategies.py`
 
 **Key methods to implement:**
 ```python

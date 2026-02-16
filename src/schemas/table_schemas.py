@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Dict, List, Optional, Any
 
 @dataclass
@@ -20,20 +21,23 @@ class TableSchema:
     unique_constraints: Optional[List[List[str]]] = None
     force_reimport: bool = False
     truncate_before_import: bool = False
+    date_threshold: Optional[datetime] = None
     
     @classmethod
     def create(cls, columns: List[ColumnDefinition], name: Optional[str] = None,
                mongo_collection: Optional[str] = None, explicit_mappings: Optional[Dict[str, str]] = None,
                export_order: int = 0, import_strategy: Optional[Any] = None,
                unique_constraints: Optional[List[List[str]]] = None,
-               force_reimport: bool = False, truncate_before_import: bool = False) -> 'TableSchema':
+               force_reimport: bool = False, truncate_before_import: bool = False,
+               date_threshold: Optional[datetime] = None) -> 'TableSchema':
         """Create a TableSchema with auto-generated field mappings.
-        
+
         Args:
             columns: List of column definitions
             name: Table name (will be set from schema key if not specified)
             mongo_collection: MongoDB collection name (defaults to table name if not specified)
             explicit_mappings: Only specify mappings where column name differs from field name
+            date_threshold: Optional per-table date threshold for filtering records
         """
         # Note: name will be set from schema key in TABLE_SCHEMAS if not provided
         # Use table name as MongoDB collection name if not specified
@@ -44,15 +48,15 @@ class TableSchema:
         excluded_columns = {'id'}
         if explicit_mappings:
             excluded_columns.update(explicit_mappings.values())
-        
+
         field_mappings = {col.name: col.name for col in columns if col.name not in excluded_columns}
-        
+
         # Override with explicit mappings if provided
         if explicit_mappings:
             field_mappings.update(explicit_mappings)
 
         return cls(name, mongo_collection, columns, field_mappings, export_order, import_strategy,
-                   unique_constraints, force_reimport, truncate_before_import)
+                   unique_constraints, force_reimport, truncate_before_import, date_threshold)
     
     def get_create_sql(self) -> str:
         column_defs = []
@@ -160,9 +164,10 @@ class BaseEntitySchema:
                         name: Optional[str] = None, mongo_collection: Optional[str] = None,
                         additional_mappings: Optional[Dict[str, str]] = None,
                         export_order: int = 0, import_strategy: Optional[Any] = None,
-                        force_reimport: bool = False, truncate_before_import: bool = False) -> TableSchema:
+                        force_reimport: bool = False, truncate_before_import: bool = False,
+                        date_threshold: Optional[datetime] = None) -> TableSchema:
         """Create a TableSchema with base columns and mappings plus additional ones.
-        
+
         Args:
             additional_columns: Additional columns beyond the base ones
             name: Table name (will be set from schema key if not specified)
@@ -170,12 +175,13 @@ class BaseEntitySchema:
             additional_mappings: Additional mappings beyond the base ones
             export_order: Export order for the table
             import_strategy: Import strategy for the table
+            date_threshold: Optional per-table date threshold for filtering records
         """
         # Combine base columns with additional columns
         columns = cls.get_base_columns()
         if additional_columns:
             columns.extend(additional_columns)
-        
+
         # Combine base mappings with additional mappings
         explicit_mappings = cls.get_base_mappings()
         if additional_mappings:
@@ -189,6 +195,7 @@ class BaseEntitySchema:
             export_order=export_order,
             import_strategy=import_strategy,
             force_reimport=force_reimport,
-            truncate_before_import=truncate_before_import
+            truncate_before_import=truncate_before_import,
+            date_threshold=date_threshold
         )
 

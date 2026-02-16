@@ -133,6 +133,35 @@ def parse_global_date_threshold() -> Optional[datetime]:
         print(f"   → Ignoring global threshold, using table-specific dates")
         return None
 
+
+DEFAULT_BATCH_SIZE = 5000
+
+
+def parse_batch_size() -> int:
+    """
+    Parse and validate the BATCH_SIZE environment variable.
+
+    Returns:
+        int: Parsed batch size if valid, otherwise DEFAULT_BATCH_SIZE (5000)
+    """
+    batch_str = os.getenv('BATCH_SIZE', '').strip()
+
+    if not batch_str:
+        return DEFAULT_BATCH_SIZE
+
+    try:
+        batch_size = int(batch_str)
+        if batch_size <= 0:
+            print(f"⚠️  BATCH_SIZE must be positive: '{batch_str}'")
+            print(f"   → Using default: {DEFAULT_BATCH_SIZE}")
+            return DEFAULT_BATCH_SIZE
+        return batch_size
+    except ValueError:
+        print(f"⚠️  Invalid BATCH_SIZE format: '{batch_str}'")
+        print(f"   Expected: positive integer")
+        print(f"   → Using default: {DEFAULT_BATCH_SIZE}")
+        return DEFAULT_BATCH_SIZE
+
 def setup_tables(conn):
     try:
         from src.schemas.schemas import TABLE_SCHEMAS

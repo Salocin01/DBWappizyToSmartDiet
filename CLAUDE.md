@@ -150,16 +150,41 @@ Extends migration window backward across all tables (`.env` file):
 GLOBAL_DATE_THRESHOLD=2024-01-01  # ISO 8601 format (YYYY-MM-DD)
 ```
 
-**Date Logic Priority:**
-1. `force_reimport=true` → Full reimport (bypasses dates)
-2. Global threshold + table date → Uses earlier date (extends window backward)
-3. Table date only → Normal incremental
-4. Neither → Full migration (first run)
-
 **Use Cases:**
-- Recover lost data from specific date
+- Recover lost data from specific date across all tables
 - Re-sync after MongoDB corrections
 - Limit historical data on first run
+
+### Per-Table Date Threshold
+
+Configure a specific date threshold for individual tables in `config/schemas.yaml`:
+
+```yaml
+# Example: Reimport users data from a specific date
+users:
+  include_base: true
+  additional_columns: [...]
+  date_threshold: "2024-06-01"  # ISO 8601 format (YYYY-MM-DD)
+```
+
+**`date_threshold: "YYYY-MM-DD"`** - Sets a per-table date filter
+- Overrides global threshold for this specific table
+- Uses earlier of `date_threshold` and table's last migration date
+- Filters by `creation_date` OR `update_date` >= threshold
+
+**Date Logic Priority:**
+1. `force_reimport=true` → Full reimport (bypasses all dates)
+2. `date_threshold` (per-table) → Uses earlier of threshold and table date
+3. `GLOBAL_DATE_THRESHOLD` → Uses earlier of global threshold and table date
+4. Table date only → Normal incremental
+5. Neither → Full migration (first run)
+
+**Use Cases:**
+- Recover data for a single table from a specific date
+- Re-sync specific table after data corrections
+- Different sync windows for different tables
+
+**Workflow:** Add `date_threshold` → Run migration → Verify → Remove flag → Commit schema
 
 ### Special Tables Reference
 
@@ -249,6 +274,7 @@ MATOMO_PASSWORD=matomo_password
 **Optional:**
 ```bash
 GLOBAL_DATE_THRESHOLD=2024-01-01  # Extend sync window backward
+BATCH_SIZE=5000                    # Documents per batch (default: 5000)
 ```
 
 ### Transfer Scenarios
@@ -376,7 +402,7 @@ def get_additional_columns(self) -> list:
 - Parent tables must migrate before children
 
 **Memory Errors:**
-- Reduce batch size in data_export.py
+- Reduce `BATCH_SIZE` in `.env` (default: 5000, try 1000-2000)
 - Avoid force_reimport on very large tables
 
 **Missing Records:**

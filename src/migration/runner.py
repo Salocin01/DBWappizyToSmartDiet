@@ -1,5 +1,5 @@
 from src.connections.mongo_connection import get_mongo_collection, MongoConnection
-from src.connections.postgres_connection import connect_postgres, setup_tables, close_postgres_connection, parse_global_date_threshold
+from src.connections.postgres_connection import connect_postgres, setup_tables, close_postgres_connection, parse_global_date_threshold, parse_batch_size
 from src.schemas.schemas import TABLE_SCHEMAS
 from src.migration.data_export import export_table_data, get_last_insert_date, print_import_summary
 from src.migration.import_summary import ImportSummary
@@ -45,11 +45,14 @@ def run_migration():
         conn = connect_postgres()
         conn = setup_tables(conn)
 
-        # Load global threshold once at migration start
+        # Load global configuration once at migration start
         global_threshold = parse_global_date_threshold()
+        batch_size = parse_batch_size()
+
+        print(f"\n⚙️  Batch size: {batch_size}")
         if global_threshold:
-            print(f"\n🌐 Global date threshold active: {global_threshold.strftime('%Y-%m-%d')}")
-            print()
+            print(f"🌐 Global date threshold active: {global_threshold.strftime('%Y-%m-%d')}")
+        print()
 
         # Sort tables by export_order to respect foreign key dependencies
         sorted_tables = sorted(TABLE_SCHEMAS.items(), key=lambda x: x[1].export_order)
@@ -84,19 +87,29 @@ def run_migration():
                 # STEP 1: Get Last Migration Date from PostgreSQL
                 table_last_date = get_last_insert_date(conn, table_name)
 
-                # Apply global threshold logic (use earlier date)
-                after_date = apply_global_threshold(table_last_date, global_threshold)
+                # Determine effective threshold (table-specific takes priority over global)
+                effective_threshold = schema.date_threshold if schema.date_threshold else global_threshold
+
+                # Apply threshold logic (use earlier date)
+                after_date = apply_global_threshold(table_last_date, effective_threshold)
 
                 # Enhanced logging
+                if schema.date_threshold:
+                    print(f"📅 Table date threshold active: {schema.date_threshold.strftime('%Y-%m-%d')}")
+
                 if after_date:
                     print(f"📅 Step 1: Last migration date: {after_date.strftime('%Y-%m-%d %H:%M:%S')}")
-                    if global_threshold and after_date == global_threshold:
+                    if schema.date_threshold and after_date == schema.date_threshold:
+                        print(f"   → Using table-specific threshold (earlier than table date)")
+                    elif global_threshold and after_date == global_threshold:
                         print(f"   → Using global threshold (earlier than table date)")
                     else:
                         print("   → Will import records created or updated after this date")
                 else:
                     print("📅 Step 1: No existing records found")
-                    if global_threshold:
+                    if schema.date_threshold:
+                        print(f"   → Will use table threshold: {schema.date_threshold.strftime('%Y-%m-%d')}")
+                    elif global_threshold:
                         print(f"   → Will use global threshold: {global_threshold.strftime('%Y-%m-%d')}")
                     else:
                         print("   → Will perform full import")
@@ -108,6 +121,7 @@ def run_migration():
                 collection=collection,
                 summary_instance=entity_summary,
                 after_date=after_date,
+                batch_size=batch_size,
             )
 
             print_import_summary(table_name, entity_summary)

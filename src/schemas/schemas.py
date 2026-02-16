@@ -1,9 +1,29 @@
 import os
+from datetime import datetime
 from typing import Dict, Any, Optional
 
 import yaml
 
 from .table_schemas import ColumnDefinition, BaseEntitySchema, TableSchema
+
+
+def _parse_date_threshold(date_str: Optional[str], table_name: str) -> Optional[datetime]:
+    """Parse and validate a date_threshold string to datetime.
+
+    Args:
+        date_str: ISO 8601 date string (YYYY-MM-DD) or None
+        table_name: Table name for error reporting
+
+    Returns:
+        Parsed datetime or None if not specified or invalid
+    """
+    if not date_str:
+        return None
+    try:
+        return datetime.fromisoformat(date_str)
+    except ValueError:
+        print(f"⚠️  Invalid date_threshold format for {table_name}: '{date_str}' (expected YYYY-MM-DD)")
+        return None
 from src.migration.strategies.user_strategies import (
     create_user_events_strategy,
     create_users_targets_strategy,
@@ -83,6 +103,7 @@ def load_schemas(schema_path: str = DEFAULT_SCHEMA_PATH) -> Dict[str, TableSchem
         strategy = _resolve_strategy(config.get("import_strategy"))
         force_reimport = config.get("force_reimport", False)
         truncate_before_import = config.get("truncate_before_import", False)
+        date_threshold = _parse_date_threshold(config.get("date_threshold"), key)
 
         if include_base:
             additional_columns = _build_column_definitions(config.get("additional_columns", []))
@@ -96,6 +117,7 @@ def load_schemas(schema_path: str = DEFAULT_SCHEMA_PATH) -> Dict[str, TableSchem
                 import_strategy=strategy,
                 force_reimport=force_reimport,
                 truncate_before_import=truncate_before_import,
+                date_threshold=date_threshold,
             )
         else:
             columns = _build_column_definitions(config.get("columns", []))
@@ -109,6 +131,7 @@ def load_schemas(schema_path: str = DEFAULT_SCHEMA_PATH) -> Dict[str, TableSchem
                 unique_constraints=config.get("unique_constraints"),
                 force_reimport=force_reimport,
                 truncate_before_import=truncate_before_import,
+                date_threshold=date_threshold,
             )
 
         if schema.name is None:
